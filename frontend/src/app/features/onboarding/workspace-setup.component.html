@@ -1,0 +1,31 @@
+<main class="setup-page">
+  <header class="setup-header"><petrix-brand /><button type="button" class="setup-signout" (click)="signOut()">Sign out <petrix-icon name="logout" /></button></header>
+  <div class="setup-container">
+    <aside class="setup-intro">
+      <div class="setup-step"><span><petrix-icon name="check" /></span> Email verified</div>
+      <div class="eyebrow">Your space to build</div>
+      <h1>Let's make<br>it <span>yours.</span></h1>
+      <p>A dedicated workspace for your agents, knowledge, and conversations. Start with the basics—you can update them later.</p>
+      <div class="setup-benefit"><petrix-icon name="spark" /><div><strong>Room for your ideas</strong><span>Your projects, organised in one place.</span></div></div>
+      <div class="setup-benefit"><petrix-icon name="people" /><div><strong>Built for collaboration</strong><span>You're the Owner of this workspace.</span></div></div>
+      <div class="verified-email"><petrix-icon name="mail" /><span>{{ api.context()?.user?.email }}</span></div>
+    </aside>
+    <section class="setup-card" aria-label="Workspace setup">
+      <div class="setup-card-heading"><div><h2>Set up your workspace</h2><p>Just a few details to get started.</p></div><span class="setup-count">01 / 01</span></div>
+      @if (error()) { <div class="notice" role="alert">{{ error() }}</div> }
+      @if (!options()) { <button type="button" class="btn btn-secondary btn-full" (click)="loadOptions()">Retry loading setup options</button> }
+      <form [formGroup]="form" (ngSubmit)="submit()">
+        <div class="avatar-field">
+          <div class="workspace-avatar">@if (avatarPreview()) { <img [src]="avatarPreview()" alt="Workspace avatar preview"> } @else { {{ initial }} }</div>
+          <div><label class="avatar-upload" for="avatar"><petrix-icon name="upload" /> Upload an avatar</label><input class="sr-only" id="avatar" type="file" accept="image/png,image/jpeg,image/webp" (change)="chooseAvatar($event)"><p>Optional · PNG, JPG, or WebP · Up to 2 MB</p>@if (avatarPreview()) { <button class="avatar-remove" type="button" (click)="removeAvatar()">Remove image</button> }</div>
+        </div>
+        <div class="field"><label for="workspace-name">Workspace name <span aria-hidden="true">*</span></label><input id="workspace-name" formControlName="name" placeholder="e.g. My AI Workspace" maxlength="100" autocomplete="organization">@if (form.controls.name.touched && form.controls.name.invalid) { <span class="field-error">Enter a workspace name, up to 100 characters.</span> }</div>
+        <div class="field"><label for="industry">Industry</label><select id="industry" formControlName="industry">@for (industry of options()?.industries || []; track industry) { <option [value]="industry">{{ industry }}</option> }</select></div>
+        <div class="field"><label for="website">Website <span class="optional">(optional)</span></label><input id="website" formControlName="website" type="url" placeholder="https://yourwebsite.com" maxlength="2048" autocomplete="url">@if (form.controls.website.touched && form.controls.website.invalid) { <span class="field-error">Use a complete address beginning with https:// or http://.</span> }</div>
+        <div class="field"><label for="country">Country <span aria-hidden="true">*</span></label><select id="country" formControlName="country_code" autocomplete="country"><option value="">Select a country</option>@for (country of options()?.countries || []; track country.code) { <option [value]="country.code">{{ country.name }}</option> }</select>@if (form.controls.country_code.touched && form.controls.country_code.invalid) { <span class="field-error">Choose your country.</span> }</div>
+        <button class="btn btn-primary btn-full" type="submit" [disabled]="busy() || !options()" [attr.aria-busy]="busy()">@if (busy()) { <span class="spinner" aria-hidden="true"></span> Saving your workspace… } @else { Enter your workspace <petrix-icon name="arrow" /> }</button>
+        <p class="setup-small">Your workspace is ready for you. No invitation required.</p>
+      </form>
+    </section>
+  </div>
+</main>

@@ -1,0 +1,27 @@
+<petrix-auth-shell>
+  <div class="eyebrow">{{ isSignup ? 'Make it your own' : 'Your workspace awaits' }}</div>
+  <h1>{{ isSignup ? 'Create your account' : 'Welcome back' }}</h1>
+  <p class="auth-subtitle">{{ isSignup ? 'Start building with Petrix AI. No invitation needed.' : 'Sign in to continue your conversations.' }}</p>
+  @if (error()) { <div class="notice" role="alert">{{ error() }}</div> }
+  <button class="provider-button" type="button" [disabled]="!options()?.google || busy()" (click)="oauth('google')" [attr.title]="options()?.google ? null : 'Google sign-in is currently unavailable'">
+    <span class="google-g" aria-hidden="true">G</span> Continue with Google
+  </button>
+  <button class="provider-button" type="button" [disabled]="!options()?.microsoft || busy()" (click)="oauth('microsoft')" [attr.title]="options()?.microsoft ? null : 'Microsoft sign-in is currently unavailable'">
+    <span class="microsoft-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></span> Continue with Microsoft
+  </button>
+  <div class="auth-divider">or continue with email</div>
+  <form [formGroup]="form" (ngSubmit)="submit()">
+    <div class="field">
+      <label for="email">Email address</label>
+      <input id="email" type="email" formControlName="email" autocomplete="email" placeholder="you@example.com" [attr.aria-invalid]="form.controls.email.touched && form.controls.email.invalid" aria-describedby="email-help" maxlength="320">
+      <span id="email-help" class="field-note">Personal and work email addresses are welcome.</span>
+      @if (form.controls.email.touched && form.controls.email.invalid) { <span class="field-error">Enter a valid email address.</span> }
+    </div>
+    <button class="btn btn-primary btn-full" type="submit" [disabled]="busy()" [attr.aria-busy]="busy()">
+      @if (busy()) { <span class="spinner" aria-hidden="true"></span> Sending your link… } @else { Continue with email <petrix-icon name="arrow" /> }
+    </button>
+  </form>
+  <div class="passwordless-note"><petrix-icon name="lock" /> Passwordless sign-in. No password to remember.</div>
+  <p class="auth-switch">{{ isSignup ? 'Already have an account?' : 'New to Petrix AI?' }} <a class="text-link" [routerLink]="isSignup ? '/login' : '/signup'">{{ isSignup ? 'Sign in' : 'Create an account' }}</a></p>
+  <p class="auth-policy">Read our <a routerLink="/terms">Terms of Use</a> and <a routerLink="/privacy">Privacy Policy</a>.</p>
+</petrix-auth-shell>

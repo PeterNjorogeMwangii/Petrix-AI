@@ -1,0 +1,26 @@
+<fieldset [disabled]="disabled" (keydown.escape)="open = false; $event.stopPropagation()">
+  <div class="field">
+    <label id="jump-label" for="jump-picker">Jump to</label>
+    <button id="jump-picker" type="button" class="target-picker" aria-labelledby="jump-label jump-value" [attr.aria-expanded]="open" aria-controls="jump-options" (click)="toggle()">
+      <span id="jump-value">{{ selected()?.name || 'Select a trigger or action' }}</span><petrix-icon name="chevron" />
+    </button>
+    @if (open) {
+      <div id="jump-options" class="target-options" role="group" aria-labelledby="jump-label">
+        <div class="target-search"><petrix-icon name="search" /><input #targetSearch id="jump-search" type="search" aria-label="Search workflow steps" placeholder="Search by name or #number" [ngModelOptions]="{standalone:true}" [(ngModel)]="search" autocomplete="off"></div>
+        <div class="target-list">
+          @for (target of filtered(); track target.id) {
+            <button type="button" class="target-option" [class.chosen]="target.id === config.target_node_id" [disabled]="active && !target.enabled" (click)="choose(target)" [attr.title]="!target.enabled ? 'Target or parent step is disabled' : target.path">
+              <span class="step-number">#{{ target.number }}</span><span class="target-text"><strong>{{ target.name }}</strong><small>{{ target.path || 'Top-level trigger' }}@if (!target.enabled) { · Disabled }</small></span><span class="target-icon" [class.action]="target.kind === 'action'"><petrix-icon [name]="icon(target)" /></span>
+            </button>
+          } @empty { <p class="empty-targets" role="status">No workflow steps match your search.</p> }
+        </div>
+      </div>
+    }
+    @if (selected(); as target) {
+      <div class="selected-target"><span class="target-icon" [class.action]="target.kind === 'action'"><petrix-icon [name]="icon(target)" /></span><span class="step-number">#{{ target.number }}</span><span class="target-text"><strong>{{ target.name }}</strong><small>{{ target.kind === 'trigger' ? 'Trigger' : 'Action' }}@if (target.path) { · {{ target.path }} }</small></span><button type="button" class="clear-target" aria-label="Clear Jump target" (click)="clear()"><petrix-icon name="close" /></button></div>
+    }
+    @if (config.target_node_id && error()) { <span class="field-error" role="alert">{{ error() }}</span> }
+    <span class="field-note">Choose any saved trigger or action in this agent’s workflow. Number badges show each step’s creation order.</span>
+  </div>
+  <p class="jump-note">The conversation continues at the selected step and leaves the current branch. A trigger destination starts its actions immediately.</p>
+</fieldset>

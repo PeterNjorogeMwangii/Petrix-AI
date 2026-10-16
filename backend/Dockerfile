@@ -1,0 +1,11 @@
+FROM python:3.9-slim
+WORKDIR /app
+COPY requirements.lock.txt ./
+RUN pip install --no-cache-dir -r requirements.lock.txt
+COPY app ./app
+COPY migrations ./migrations
+COPY alembic.ini ./
+RUN useradd --create-home petrix
+USER petrix
+EXPOSE 8000
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000 --no-access-log"]

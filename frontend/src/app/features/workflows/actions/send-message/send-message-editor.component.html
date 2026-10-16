@@ -1,0 +1,24 @@
+<fieldset [disabled]="disabled">
+  <section class="message-section">
+    <h3>Messages <span>{{ translation.messages.length }} / 10</span></h3>
+    <p class="field-note">One message is chosen at random each time this action runs. Wrap text or variables in **double asterisks** for bold.</p>
+    @if (!hasTranslation) { <p class="translation-note">No translation is saved for this language. Add it here; the tester uses the default message until you save.</p> }
+    @for (message of translation.messages; track $index; let index = $index) {
+      <div class="message-variant">
+        <label class="sr-only" [for]="'variant-' + index">Message {{ index + 1 }}</label>
+        <textarea [id]="'variant-' + index" [name]="'variant-' + index" [ngModelOptions]="{standalone:true}" [(ngModel)]="translation.messages[index]" (ngModelChange)="update()" maxlength="4000" rows="4" placeholder="Write your message…"></textarea>
+        <div class="variant-footer"><span>{{ message.length }} / 4,000</span><button type="button" (click)="removeMessage(index)" [disabled]="translation.messages.length < 2">Remove</button></div>
+      </div>
+    }
+    <button class="add-button" type="button" (click)="addMessage()" [disabled]="translation.messages.length >= 10">+ Add message</button>
+    <p class="placeholder-note">Use <code>{{ '{_chatbot.name}' }}</code> for the agent’s saved name, or <code>{{ '{complaint_ref}' }}</code> for a session variable. Unknown variables produce a tester error.</p>
+  </section>
+  <section class="message-section">
+    <h3>Quick reply options <span>{{ translation.quick_replies.length }} / 13</span></h3>
+    <p class="field-note">Offer clickable replies below the message. Each sends its text as the customer’s next message.</p>
+    @for (reply of translation.quick_replies; track $index; let index = $index) {
+      <div class="reply-option"><label class="sr-only" [for]="'reply-' + index">Quick reply {{ index + 1 }}</label><input [id]="'reply-' + index" [name]="'reply-' + index" [ngModelOptions]="{standalone:true}" [(ngModel)]="translation.quick_replies[index]" (ngModelChange)="update()" maxlength="100" placeholder="Enter reply"><button type="button" (click)="removeReply(index)" [attr.aria-label]="'Remove reply ' + (index + 1)">×</button></div>
+    }
+    <button class="add-button" type="button" (click)="addReply()" [disabled]="translation.quick_replies.length >= 13">+ Add option</button>
+  </section>
+</fieldset>

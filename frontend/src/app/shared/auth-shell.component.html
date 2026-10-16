@@ -1,0 +1,31 @@
+<main class="auth-layout">
+  <section class="auth-story" aria-label="About Petrix AI">
+    <a class="story-brand" routerLink="/signup" aria-label="Petrix AI home"><petrix-brand /></a>
+    <div class="story-heading">
+      <div class="eyebrow">A workspace for every conversation</div>
+      <h1>Better conversations.<br><span>Bigger possibilities.</span></h1>
+      <p>Bring your knowledge, workflows, and AI agents together. Build the experiences your customers deserve.</p>
+    </div>
+    <div class="product-preview" aria-hidden="true">
+      <div class="preview-toolbar"><span class="preview-dot"></span><span class="preview-dot"></span><span class="preview-dot"></span><span class="preview-title">Petrix AI workspace</span></div>
+      <div class="preview-body">
+        <div class="preview-sidebar"><span class="preview-p">P</span><petrix-icon name="spark" /><petrix-icon name="inbox" /><petrix-icon name="chat" /><petrix-icon name="chart" /></div>
+        <div class="preview-main">
+          <div class="preview-header"><span>AI agents</span><span class="preview-agent"><petrix-icon name="spark" /> Petrix assistant <petrix-icon name="chevron" /></span></div>
+          <div class="preview-tabs"><span>Agent</span><span class="active">Knowledge</span><span>Workflows</span><span>Publish</span></div>
+          <div class="preview-heading">Everything your agent needs to know.</div>
+          <div class="preview-sources"><div><petrix-icon name="upload" /><span>Upload a file</span></div><div><petrix-icon name="globe" /><span>Add a website</span></div></div>
+          <div class="preview-row"><petrix-icon name="book" /><span>Customer support guide</span><span class="preview-ready">Ready</span></div>
+          <div class="preview-row"><petrix-icon name="globe" /><span>Product documentation</span><span class="preview-ready">Ready</span></div>
+        </div>
+      </div>
+      <div class="preview-message"><span class="preview-spark"><petrix-icon name="spark" /></span><div><strong>One connected experience</strong><span>From the first question to the next action.</span></div><span class="preview-check"><petrix-icon name="check" /></span></div>
+    </div>
+    <div class="story-footer"><span class="channel-dot"></span><span>Your knowledge. Your agents. Your workspace.</span></div>
+  </section>
+  <section class="auth-form-side">
+    <div class="mobile-brand"><petrix-brand /></div>
+    <div class="auth-card"><ng-content /></div>
+    <div class="auth-bottom">Petrix AI <span>•</span> Built around your conversations</div>
+  </section>
+</main>

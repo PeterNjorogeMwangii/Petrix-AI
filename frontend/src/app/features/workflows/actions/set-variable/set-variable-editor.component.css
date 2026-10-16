@@ -1,0 +1,12 @@
+:host { display:block; }
+fieldset { border:0; padding:0; margin:0; min-width:0; }
+#variable-name { font-family:'Consolas','SFMono-Regular',monospace; }
+textarea { font-family:'Consolas','SFMono-Regular',monospace; font-size:12px; line-height:1.8; tab-size:2; resize:vertical; min-height:145px; }
+.script-footer { display:flex; align-items:center; justify-content:space-between; gap:10px; color:#8c8c97; font-size:10px; }
+.data-note { border:1px solid #3f493f; background:#b8e8ce06; padding:12px; border-radius:7px; font-size:11px; color:#afbdb0; line-height:1.7; }
+code { color:#e2bd9e; font-family:'Consolas','SFMono-Regular',monospace; font-size:11px; }
+.expression-help { font-size:11px; color:var(--muted); margin-top:23px; line-height:1.8; }
+summary { cursor:pointer; color:#bbb5ac; }
+.expression-help > div { padding:12px 0; }
+.expression-help > div > code { display:block; background:#101012; border:1px solid #333339; border-radius:5px; padding:9px; margin-bottom:8px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.expression-help p { margin-bottom:12px; }

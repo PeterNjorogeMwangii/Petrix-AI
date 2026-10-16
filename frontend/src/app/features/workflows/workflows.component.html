@@ -1,0 +1,98 @@
+<section class="workflow-module" [class.with-editor]="editor()">
+  @if (loading()) { <div class="workflow-loading"><span class="spinner"></span> Loading workflows…</div> }
+  @else if (document(); as data) {
+    <div class="workflow-toolbar">
+      @if (root(); as selectedRoot) {
+        <button class="tool-button back" (click)="back()" [disabled]="busy()" aria-label="Back to workflows"><petrix-icon name="arrow" /></button>
+        <div class="toolbar-title"><div class="eyebrow">Workflow</div><h2 class="numbered-title"><span class="node-number">#{{ selectedRoot.number }}</span>{{ selectedRoot.name }}</h2><p>{{ selectedRoot.description || label(selectedRoot.type) }}</p></div>
+        <button class="tool-button" (click)="edit(selectedRoot)" [disabled]="busy()">Trigger settings</button>
+      } @else {
+        <div class="toolbar-title"><div class="eyebrow">Conversation logic</div><h2>Workflows</h2><p>Turn an event into a conversation.</p></div>
+        <button class="btn btn-primary" (click)="newTrigger()" [disabled]="!canManage || busy()"><petrix-icon name="plus" />New workflow</button>
+      }
+    </div>
+    <div class="workflow-status"><span class="status-dot"></span>Saved revision {{ data.revision }}<span class="status-note">Changes apply to the next tester event.</span><button class="tool-button" (click)="load()" [disabled]="busy()" aria-label="Reload workflows" title="Reload workflows"><petrix-icon name="refresh" /></button></div>
+    @if (success()) { <div class="notice success" role="status">{{ success() }}</div> }
+    @if (error()) { <div class="notice" role="alert">{{ error() }}</div> }
+    @if (root(); as selectedRoot) {
+      <div class="workflow-tree">
+        <div class="tree-heading"><span>Conversation steps</span><span>Enabled</span></div>
+        <div class="node-row root-node"><button class="node-main" (click)="edit(selectedRoot)"><span class="type-icon event"><petrix-icon [name]="icon(selectedRoot)" /></span><span><span class="node-heading"><span class="node-number">#{{ selectedRoot.number }}</span><strong>{{ selectedRoot.name }}</strong></span><small>{{ label(selectedRoot.type) }}</small></span></button><span class="permanent"><petrix-icon name="lock" />@if (permanent(selectedRoot)) { Permanent } @else { Trigger }</span></div>
+        <ng-container [ngTemplateOutlet]="tree" [ngTemplateOutletContext]="{nodes:selectedRoot.children,parentId:selectedRoot.id,depth:1}" />
+      </div>
+      <div class="workflow-help"><petrix-icon name="help" /><p>Actions run in order. Nested triggers wait for the next matching event. A fallback handles unmatched events at its level.</p></div>
+    } @else {
+      <div class="workflow-table-wrap"><table class="workflow-table"><thead><tr><th>Workflow</th><th>Description</th><th>Type</th><th>Enabled</th><th><span class="sr-only">Options</span></th></tr></thead><tbody>
+        @for (node of data.nodes; track node.id) {
+          <tr><td><button class="workflow-link" (click)="openRoot(node)" [disabled]="busy()"><span class="node-number">#{{ node.number }}</span><strong>{{ node.name }}</strong></button></td><td class="description-cell">{{ node.description || '—' }}</td><td><span class="type-cell"><span class="type-icon" [class.event]="permanent(node)"><petrix-icon [name]="icon(node)" /></span>{{ label(node.type) }}</span></td><td>
+            @if (permanent(node)) { <span class="locked-cell" title="Permanent trigger"><petrix-icon name="lock" /><span class="sr-only">Always enabled</span></span> } @else { <button class="switch" role="switch" [attr.aria-label]="'Enable ' + node.name" [attr.aria-checked]="node.enabled" [class.on]="node.enabled" (click)="toggle(node)" [disabled]="!canManage || busy()"><span></span></button> }
+          </td><td>@if (!permanent(node)) { <button class="tool-button delete-button" [attr.aria-label]="'Delete ' + node.name" (click)="remove(node,null)" [disabled]="!canManage || busy()"><petrix-icon name="trash" /></button> }</td></tr>
+        }
+      </tbody></table></div>
+      <div class="workflow-help"><petrix-icon name="spark" /><p>Open <strong>Chat started</strong> to change your agent’s greeting. It comes from the saved Send message action.</p></div>
+    }
+  } @else if (error()) { <div class="notice" role="alert">{{ error() }}</div><button class="btn btn-secondary" (click)="load()">Retry</button> }
+
+  @if (editor(); as node) {
+    <button class="editor-backdrop" aria-label="Close step settings" (click)="closeEditor()"></button>
+    <aside class="node-editor" aria-labelledby="step-title">
+      <header><div><span class="eyebrow">{{ node.kind === 'action' ? 'Action settings' : 'Trigger settings' }}</span><h3 id="step-title" class="numbered-title">@if (node.number) { <span class="node-number">#{{ node.number }}</span> }{{ label(node.type) }}</h3><p>{{ definition(node.type)?.description }}</p></div><button class="tool-button" aria-label="Close step settings" (click)="closeEditor()" [disabled]="busy()"><petrix-icon name="close" /></button></header>
+      <form (ngSubmit)="saveEditor()">
+        <div class="editor-scroll"><fieldset [disabled]="!canManage || busy()">
+          <div class="field"><label for="step-name">Name</label><input id="step-name" name="stepName" [(ngModel)]="node.name" required maxlength="100"></div>
+          <div class="field"><label for="step-description">Description <span class="optional">Optional</span></label><textarea id="step-description" name="stepDescription" [(ngModel)]="node.description" maxlength="1000" rows="2"></textarea>@if (node.type === 'message_received') { <span class="field-note">Explain what this intent handles and how it differs from similar intents.</span> }</div>
+          @if (!permanent(node)) { <label class="enabled-field"><input type="checkbox" name="stepEnabled" [(ngModel)]="node.enabled">Enabled</label> }
+          @if (node.type === 'send_message' || node.type === 'message_received') {
+            <div class="field editor-language"><label for="step-language">Content language</label><select id="step-language" name="stepLanguage" [ngModel]="editLanguage" (ngModelChange)="setEditLanguage($event)">@for (code of agent.languages; track code) { <option [value]="code">{{ languageName(code) }}</option> }</select><span class="field-note">Add each translation manually.</span></div>
+          }
+          @if (node.type === 'send_message') {
+            <petrix-send-message-editor [config]="editMessages" [language]="editLanguage" [disabled]="!canManage || busy()" (configChange)="editMessages = $event" />
+          } @else if (node.type === 'set_variable') {
+            <petrix-set-variable-editor [config]="editVariable" [disabled]="!canManage || busy()" (configChange)="editVariable = $event" />
+          } @else if (node.type === 'jump') {
+            <petrix-jump-editor [config]="editJump" [targets]="jumpTargets()" [active]="jumpActive()" [disabled]="!canManage || busy()" (configChange)="editJump = $event" />
+          } @else if (node.type === 'message_received') {
+            <div class="field"><label for="intent-examples">Intent examples</label><textarea id="intent-examples" name="intentExamples" [(ngModel)]="examplesText" (ngModelChange)="updateExamples()" rows="7" placeholder="Check my balance&#10;What is my account balance?&#10;Show me my balance"></textarea><span class="field-note">One example per line, up to 30 per language. Add examples before enabling this trigger.</span></div>
+            <div class="field"><label for="match-mode">Matching</label><select id="match-mode" name="matchMode" [(ngModel)]="matchMode"><option value="approximate">Layered intent matching</option><option value="exact">Exact phrase matching</option></select><span class="field-note">Layered matching tries fuzzy text, then semantic embeddings, then Groq when available. Close competing matches pass to the next stage. The agent’s LLM setting controls the Groq stage.</span></div>
+            @if (matchMode === 'approximate') { <div class="field"><label for="match-threshold">Minimum fuzzy similarity · {{ threshold }}</label><input id="match-threshold" name="threshold" type="range" min="0.3" max="1" step="0.05" [(ngModel)]="threshold"><span class="field-note">This threshold controls the first stage. Embeddings and Groq have their own thresholds.</span></div> }
+          } @else if (node.type === 'attachment_received') {
+            <h4>Attachment types</h4><div class="attachment-types">@for (type of ['image','audio','video','file']; track type) { <label><input type="checkbox" [checked]="attachmentTypes.includes(type)" (change)="toggleAttachment(type)">{{ type }}</label> }</div><p class="field-note">The tester simulates attachment metadata. File processing actions will be configured later.</p>
+          } @else if (node.type === 'fallback') { <p class="event-explainer">Runs when no other enabled trigger at this level matches the incoming event.</p> }
+          @else if (node.type === 'collect_feedback') { <p class="event-explainer">Runs after a closed chat receives a CSAT rating. Use the tester’s feedback event to try it.</p> }
+          @else { <p class="event-explainer">This conversation trigger is permanent and always enabled. Configure what happens by adding actions below it.</p> }
+        </fieldset></div>
+        <footer>@if (error()) { <div class="field-error" role="alert">{{ error() }}</div> }<div><button class="btn btn-secondary" type="button" (click)="closeEditor()" [disabled]="busy()">Cancel</button><button class="btn btn-primary" [disabled]="!canManage || busy() || !dirty() || !node.name.trim() || (node.type === 'jump' && !!jumpError())">@if (busy()) { <span class="spinner"></span> }Save</button></div></footer>
+      </form>
+    </aside>
+  }
+</section>
+
+<ng-template #tree let-nodes="nodes" let-parentId="parentId" let-depth="depth">
+  <div class="child-steps" [style.--depth]="depth">
+    @if (canManage) { <button class="insertion-button" (click)="addAction(parentId, nodes[0]?.id || null)" [disabled]="busy()"><petrix-icon name="plus" />Add action</button> }
+    @for (node of nodes; track node.id; let index = $index) {
+      <div class="node-row" [class.selected]="editor()?.id === node.id" [class.disabled-node]="!node.enabled" [class.trigger-row]="node.kind === 'trigger'">
+        <button class="node-main" (click)="edit(node)" [disabled]="busy()"><span class="type-icon" [class.action]="node.kind === 'action'"><petrix-icon [name]="icon(node)" /></span><span><span class="node-heading"><span class="node-number">#{{ node.number }}</span><strong>{{ node.name }}</strong></span><small>{{ node.type === 'jump' ? jumpTargetLabel(node) : label(node.type) }}</small></span></button>
+        <div class="node-controls"><button class="switch" role="switch" [attr.aria-label]="'Enable ' + node.name" [attr.aria-checked]="node.enabled" [class.on]="node.enabled" (click)="toggle(node)" [disabled]="!canManage || busy()"><span></span></button>
+          @if (canManage) { <button class="tool-button move-button" [attr.aria-label]="'Move ' + node.name + ' up'" (click)="move(node,parentId,-1)" [disabled]="busy() || !canMove(nodes,index,-1)">↑</button><button class="tool-button move-button" [attr.aria-label]="'Move ' + node.name + ' down'" (click)="move(node,parentId,1)" [disabled]="busy() || !canMove(nodes,index,1)">↓</button><button class="tool-button delete-button" [attr.aria-label]="'Delete ' + node.name" (click)="remove(node,parentId)" [disabled]="busy()"><petrix-icon name="trash" /></button> }
+        </div>
+      </div>
+      @if (node.children.length) { <ng-container [ngTemplateOutlet]="tree" [ngTemplateOutletContext]="{nodes:node.children,parentId:node.id,depth:depth + 1}" /> }
+      @else if (canManage && node.type !== 'jump') { <div class="nested-tools"><button (click)="addAction(node.id)" [disabled]="busy()">+ Nested action</button><button (click)="newTrigger(node.id)" [disabled]="busy()">+ Nested trigger</button></div> }
+      @if (canManage && node.kind === 'action') { <button class="insertion-button" (click)="addAction(parentId,nodes[index + 1]?.id || null)" [disabled]="busy()"><petrix-icon name="plus" />Add action here</button> }
+    }
+    @if (canManage) { <button class="add-trigger-button" (click)="newTrigger(parentId)" [disabled]="busy()"><petrix-icon name="plus" />Add nested trigger</button> }
+    @if (!nodes.length && !canManage) { <p class="empty-steps">No steps configured.</p> }
+  </div>
+</ng-template>
+
+<dialog #workflowDialog class="workflow-dialog" [class.catalog-dialog]="dialogType() === 'action'" (cancel)="onCancel($event)" aria-labelledby="workflow-dialog-title">
+  <header><h2 id="workflow-dialog-title">{{ dialogType() === 'action' ? 'Add action' : 'New workflow' }}</h2><button class="tool-button" aria-label="Close workflow dialog" (click)="closeDialog()" [disabled]="busy()"><petrix-icon name="close" /></button></header>
+  @if (error()) { <div class="notice" role="alert">{{ error() }}</div> }
+  @if (dialogType() === 'trigger') {
+    <form (ngSubmit)="createTrigger()"><fieldset [disabled]="busy()"><div class="field"><label for="workflow-type">Workflow type</label><select id="workflow-type" name="createType" [(ngModel)]="createType">@for (trigger of availableTriggers(); track trigger.type) { <option [value]="trigger.type" [disabled]="trigger.type === 'fallback' && hasFallbackAtInsertion()">{{ trigger.name }}</option> }</select></div><div class="field"><label for="workflow-name">Name</label><input id="workflow-name" name="createName" [(ngModel)]="createName" required maxlength="100" placeholder="Enter name"></div><div class="field"><label for="workflow-description">Description <span class="optional">Optional</span></label><textarea id="workflow-description" name="createDescription" [(ngModel)]="createDescription" rows="3" maxlength="1000" placeholder="What should this workflow do?"></textarea></div><p class="field-note">Message triggers start disabled so you can configure their intent examples first.</p><div class="dialog-actions"><button class="btn btn-secondary" type="button" (click)="closeDialog()">Cancel</button><button class="btn btn-primary" [disabled]="!createName.trim() || (createType === 'fallback' && hasFallbackAtInsertion()) || busy()">Create</button></div></fieldset></form>
+  } @else if (dialogType() === 'action') {
+    <p class="catalog-description">Choose what happens next. Send message, Set variable, and Jump are ready to configure; the other actions will follow in the next steps.</p>
+    @for (group of groups; track group) { <section class="action-group"><h3>{{ group }}</h3><div class="action-catalog">@for (action of groupedActions(group); track action.type) { <button [disabled]="!action.available" (click)="chooseAction(action)"><span class="type-icon action"><petrix-icon [name]="actionIcon(action.type)" /></span><span><strong>{{ action.name }}</strong><small>{{ action.description }}</small></span><em>{{ action.available ? 'Ready' : 'Later' }}</em></button> }</div></section> }
+  }
+</dialog>

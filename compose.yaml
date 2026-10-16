@@ -1,0 +1,59 @@
+name: petrix-ai
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: petrix
+      POSTGRES_USER: petrix
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run python scripts/init_dev.py first}
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - petrix_postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U petrix -d petrix"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
+  backend:
+    build: ./backend
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://petrix:${POSTGRES_PASSWORD:?Run python scripts/init_dev.py first}@postgres:5432/petrix
+      SESSION_SIGNING_SECRET: ${SESSION_SIGNING_SECRET:?Run python scripts/init_dev.py first}
+      FRONTEND_ORIGIN: http://localhost:4200
+      API_BASE_URL: http://localhost:8000
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_FROM: Petrix AI <hello@petrix.local>
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
+      MICROSOFT_TENANT: common
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  frontend:
+    build: ./frontend
+    ports:
+      - "127.0.0.1:4200:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+volumes:
+  petrix_postgres:

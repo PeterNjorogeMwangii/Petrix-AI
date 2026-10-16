@@ -1,0 +1,42 @@
+<header class="tester-title"><span><petrix-icon name="chat" />Agent tester</span><button class="icon-button" (click)="restart()" [disabled]="busy() || !agent || !canManage" aria-label="Restart tester" title="Restart tester"><petrix-icon name="refresh" /></button></header>
+<div class="tester-meta"><span>Workflow revision {{ result()?.workflow_revision || '—' }}</span><span class="tester-status" [class.closed]="result()?.closed">{{ busy() ? 'Running' : result()?.closed ? 'Closed' : result() ? 'Ready' : 'Offline' }}</span></div>
+@if (agent && canManage) { <div class="language-row"><label for="test-language">Language</label><select id="test-language" [(ngModel)]="language" (ngModelChange)="restart()" [disabled]="busy()">@for (code of agent.languages; track code) { <option [value]="code">{{ languageName(code) }}</option> }</select></div> }
+@if (savedRevision && result() && savedRevision !== result()?.workflow_revision) { <div class="changed-note">Workflows updated. Restart to replay Chat started; your next event uses the saved changes.</div> }
+<div class="messages" #messageList aria-live="polite" aria-label="Tester conversation">
+  @if (!agent) { <div class="tester-empty"><petrix-icon name="spark" /><p>Create an agent to test its workflows.</p></div> }
+  @else if (!canManage) { <div class="tester-empty"><petrix-icon name="lock" /><p>Ask an administrator for the Manage AI Agents permission to use the tester.</p></div> }
+  @else if (!messages().length && !busy() && result()) { <div class="tester-empty"><p>Workflow completed without sending a message.</p><small>@if (variableEntries().length) { Session variables are available below. } @else { Add or enable a Send message action to configure the greeting. }</small></div> }
+  @for (message of messages(); track message.id; let last = $last) {
+    <div class="message-row" [class.user]="message.role === 'user'" [class.event]="message.role === 'event'">
+      @if (message.role === 'assistant') { <span class="chat-avatar">@if (agent?.avatar_url) { <img [src]="agent!.avatar_url" alt=""> } @else { <petrix-icon name="spark" /> }</span> }
+      <div class="message-content"><div class="bubble"><p>@if (message.role === 'assistant') { <petrix-message-text [text]="message.content" /> } @else { {{ message.content }} }</p></div><small>{{ message.created_at | date:'shortTime' }}@if (message.role === 'assistant') { <span>{{ message.source === 'llm' ? 'Generative reply' : message.source === 'clarification' ? 'Clarification' : 'Send message' }}</span> }</small>
+        @if (message.quick_replies?.length) { <div class="quick-replies">@for (reply of message.quick_replies; track reply) { <button (click)="send(reply)" [disabled]="!ready() || busy() || !last">{{ reply }}</button> }</div> }
+      </div>
+    </div>
+  }
+  @if (busy()) { <div class="typing"><span></span><span></span><span></span><span class="sr-only">Running workflow</span></div> }
+</div>
+@if (result()?.notice) { <p class="tester-notice" role="status">{{ result()?.notice }}</p> }
+@if (result()?.waiting && !result()?.closed) { <p class="waiting-note">Waiting for a nested trigger.</p> }
+@if (error()) { <div class="tester-error" role="alert">{{ error() }}</div> }
+@if (result()) { <details class="variable-inspector"><summary>Session variables · {{ variableEntries().length }}</summary><div>@for (entry of variableEntries(); track entry[0]) { <article><strong>{{ entry[0] }}</strong><pre>{{ variableText(entry[1]) }}</pre></article> } @empty { <p>No custom variables have been set in this chat.</p> }</div></details> }
+@if (result()?.matching; as match) { @if (match.attempts.length) {
+  <details class="intent-inspector"><summary>Intent matching · {{ matchingLabel(match.method) }}@if (match.warnings.length) { · Service unavailable }</summary>
+    <div class="intent-details">
+      @if (match.intent_name) { <p><strong>#{{ match.node_number }} · {{ match.intent_name }}</strong></p> }
+      @if (match.score !== null) { <p>{{ match.method === 'llm' || match.method === 'clarification' ? 'Model confidence' : 'Similarity' }}: {{ matchingScore(match.score) }}</p> }
+      <ol>@for (attempt of match.attempts; track $index) { <li><strong>{{ matchingLabel(attempt.stage) }}</strong><span>{{ matchingStatus(attempt.status) }} · {{ attempt.scope === 'nested' ? 'Nested' : 'Top level' }}@if (attempt.score !== null) { · {{ matchingScore(attempt.score) }} }</span></li> }</ol>
+      @if (entityEntries().length) { <h4>Recognized entities</h4><dl>@for (entry of entityEntries(); track entry[0]) { <div><dt>{{ entry[0] }}</dt><dd>{{ entry[1] }}</dd></div> }</dl> }
+      @if (match.context_summary) { <p><strong>Context:</strong> {{ match.context_summary }}</p> }
+      @for (warning of match.warnings; track warning) { <p class="matching-warning" role="status">{{ warning }}</p> }
+    </div>
+  </details>
+} }
+@if (result()?.trace?.length) { <details class="execution-trace"><summary>Last execution · {{ result()!.trace.length }} steps</summary><ol>@for (step of result()!.trace; track $index) { <li><strong>@if (step.node_number) { #{{ step.node_number }} · }{{ step.name }}</strong><span>@if (step.type === 'jump' && step.target_node_number) { Jumped to #{{ step.target_node_number }} } @else if (step.outcome === 'jumped_to') { Entered by Jump } @else { {{ step.outcome }} }</span></li> }</ol></details> }
+<details class="event-controls"><summary>Test an event</summary><div class="event-form"><label class="sr-only" for="test-event-type">Event</label><select id="test-event-type" [(ngModel)]="eventType" [disabled]="busy()"><option value="attachment_received">Attachment received</option><option value="chat_closed">Chat closed</option><option value="collect_feedback">Collect feedback</option><option value="chat_timeout">Chat timeout</option><option value="ai_timeout">AI timeout</option></select>
+  @if (eventType === 'attachment_received') { <label for="test-file-type">Attachment type</label><select id="test-file-type" [(ngModel)]="attachmentType" [disabled]="busy()">@for (type of ['image','audio','video','file']; track type) { <option [value]="type">{{ type }}</option> }</select><label for="test-file-name">File name</label><input id="test-file-name" [(ngModel)]="attachmentName" maxlength="255" [disabled]="busy()"><p>Simulates attachment metadata; no file is uploaded.</p> }
+  @if (eventType === 'collect_feedback') { <label for="test-csat">CSAT rating</label><select id="test-csat" [(ngModel)]="rating" [disabled]="busy()">@for (value of [1,2,3,4,5]; track value) { <option [ngValue]="value">{{ value }} / 5</option> }</select><p>Close the chat first. One rating is accepted per chat.</p> }
+  <button class="btn btn-secondary" type="button" (click)="simulate()" [disabled]="!canSendEvent()">Run event</button>
+</div></details>
+<form class="composer" (ngSubmit)="send()"><label class="sr-only" for="workflow-test-message">Message your agent</label><textarea id="workflow-test-message" name="testerMessage" [(ngModel)]="text" rows="2" maxlength="4000" (keydown.enter)="onEnter($event)" [disabled]="!ready() || busy()" [placeholder]="result()?.closed ? 'Restart to begin a new chat' : 'Type a message…'"></textarea><button aria-label="Send message" [disabled]="!ready() || busy() || !text.trim()"><petrix-icon name="arrow" /></button></form>
+<p class="tester-footer"><petrix-icon name="lock" />Workspace testing · no channels connected</p>

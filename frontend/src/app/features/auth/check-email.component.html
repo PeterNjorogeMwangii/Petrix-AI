@@ -1,0 +1,14 @@
+<petrix-auth-shell>
+  <div class="auth-status-icon"><petrix-icon name="mail" /></div>
+  <div class="eyebrow">One more step</div>
+  <h1>Check your inbox</h1>
+  <p class="auth-subtitle">If the address is eligible, a sign-in link will arrive at <strong class="email-highlight">{{ email || 'your email address' }}</strong>. Open it to verify your email and continue.</p>
+  @if (error()) { <div class="notice" role="alert">{{ error() }}</div> }
+  @if (success()) { <div class="notice success" role="status">{{ success() }}</div> }
+  <div class="notice success"><petrix-icon name="lock" /> The link works once and expires after {{ expiryMinutes() }} minutes.</div>
+  <p class="field-note">Nothing in your inbox? Check your spam folder and make sure you entered the right address.</p>
+  @if (email) {
+    <div class="resend-row"><button type="button" [disabled]="countdown() > 0 || busy()" (click)="resend()">{{ busy() ? 'Requesting…' : countdown() > 0 ? 'Resend link in ' + countdown() + 's' : 'Resend sign-in link' }}</button></div>
+  }
+  <a class="back-link" routerLink="/signup">Use a different email address</a>
+</petrix-auth-shell>

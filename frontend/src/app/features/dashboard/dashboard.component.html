@@ -1,0 +1,151 @@
+<main class="dashboard" [class.settings-view]="settingsMode">
+  @if (sidebarOpen()) { <button class="sidebar-backdrop" aria-label="Close navigation" (click)="sidebarOpen.set(false)"></button> }
+  <aside class="sidebar" [class.open]="sidebarOpen()" aria-label="Main navigation">
+    <div class="sidebar-brand"><petrix-brand /><button class="mobile-close icon-button" aria-label="Close navigation" (click)="sidebarOpen.set(false)"><petrix-icon name="close" /></button></div>
+    <div class="workspace-overline">Workspace</div>
+    <nav>
+      @for (item of menu; track item.label) {
+        <button type="button" class="nav-item" [class.active]="!settingsMode && item.label === 'AI agents'" [attr.aria-current]="!settingsMode && item.label === 'AI agents' ? 'page' : null" (click)="item.label === 'AI agents' ? openAgents() : futureFeature(item.label)"><petrix-icon [name]="item.icon" /><span>{{ item.label }}</span>@if (!settingsMode && item.label === 'AI agents') { <span class="nav-active-dot"></span> }</button>
+      }
+      <div class="nav-divider"></div>
+      <button class="nav-item" [class.active]="settingsMode" (click)="openSettings()" [disabled]="!api.context()?.workspace?.permissions?.manage_workspace_roles" [attr.aria-current]="settingsMode ? 'page' : null"><petrix-icon name="settings" />Settings</button>
+    </nav>
+    <div class="sidebar-bottom">
+      <div class="plan-usage"><span>{{ usage().plan_name }} plan</span><span>{{ usage().count }} / {{ usage().agent_limit }} agents</span></div>
+      <div class="workspace-row"><div class="workspace-tile">@if (api.context()?.workspace?.avatar_url) { <img [src]="api.context()?.workspace?.avatar_url" alt="Workspace avatar"> } @else { {{ initials }} }</div><div class="workspace-name"><strong>{{ api.context()?.workspace?.name }}</strong><span>Personal workspace</span></div><span class="owner-badge">{{ api.context()?.workspace?.role | titlecase }}</span></div>
+      <div class="user-row"><span class="user-avatar">{{ userInitial }}</span><div><strong>{{ api.context()?.user?.full_name || 'Your account' }}</strong><span>{{ api.context()?.user?.email }}</span></div><button class="icon-button" aria-label="Sign out" (click)="logout()" [disabled]="!!busy()"><petrix-icon name="logout" /></button></div>
+    </div>
+  </aside>
+  <section class="dashboard-main" [attr.aria-label]="settingsMode ? 'Workspace settings' : 'AI agents'">
+    <header class="dashboard-header">
+      <div class="header-title"><button class="mobile-menu icon-button" aria-label="Open navigation" (click)="sidebarOpen.set(true)"><petrix-icon name="menu" /></button><h1>{{ settingsMode ? 'Workspace settings' : 'AI agents' }}</h1>
+        @if (!settingsMode) {
+          <div class="agent-picker">
+            <button class="agent-selector" (click)="dropdownOpen.set(!dropdownOpen())" [attr.aria-expanded]="dropdownOpen()" aria-controls="agent-dropdown" [disabled]="loading() || !!busy() || testerBusy()"><span class="agent-avatar small">@if (selected()?.avatar_url) { <img [src]="selected()?.avatar_url" alt=""> } @else { {{ initialsFor(selected()?.name || 'AI') }} }</span><span>{{ selected()?.name || 'Select an AI agent' }}</span><petrix-icon name="chevron" /></button>
+            @if (dropdownOpen()) {
+              <div class="agent-dropdown" id="agent-dropdown"><label class="sr-only" for="agent-search">Find an agent</label><input id="agent-search" class="dropdown-search" placeholder="Find an agent…" [(ngModel)]="agentSearch">
+                <div class="agent-options" role="listbox" aria-label="AI agents">
+                  @for (agent of filteredAgents(); track agent.id) { <button role="option" [attr.aria-selected]="selected()?.id === agent.id" (click)="selectAgent(agent)"><span class="agent-avatar small">@if (agent.avatar_url) { <img [src]="agent.avatar_url" alt=""> } @else { {{ initialsFor(agent.name) }} }</span><span>{{ agent.name }}</span>@if (selected()?.id === agent.id) { <petrix-icon name="check" /> }</button> }
+                  @if (!filteredAgents().length) { <p class="dropdown-empty">No matching agents</p> }
+                </div>
+                <button class="dropdown-create" (click)="openModal('choose')" [disabled]="!canManage() || atCapacity()"><petrix-icon name="plus" />Create AI agent</button>
+                <div class="dropdown-plan">{{ usage().count }} of {{ usage().agent_limit }} agents used</div>
+              </div>
+            }
+          </div>
+        }
+      </div>
+      @if (!settingsMode && selected()) { <div class="header-actions"><button class="icon-button mobile-tester" aria-label="Open agent tester" (click)="testerOpen.set(true)"><petrix-icon name="chat" /></button><span class="saved-state">@if (dirty()) { <span class="unsaved-dot"></span>Unsaved changes } @else { <petrix-icon name="check" /> All changes saved }</span><button class="icon-button" aria-label="Reload agents" title="Reload agents" (click)="canLeave() && load()" [disabled]="loading() || !!busy() || testerBusy()"><petrix-icon name="refresh" /></button></div> }
+    </header>
+    @if (!settingsMode) {
+      <div class="dashboard-tabs" role="tablist" aria-label="Agent configuration">@for (tab of tabs; track tab) { <button role="tab" [attr.aria-selected]="activeTab() === tab" [class.active]="activeTab() === tab" [disabled]="!selected() || !availableTabs.has(tab) || !!busy()" [attr.title]="availableTabs.has(tab) ? null : 'Available in a later milestone'" (click)="setTab(tab)">{{ tab }}</button> }</div>
+    }
+    <div class="dashboard-content">
+      @if (error()) { <div class="notice" role="alert"><span>{{ error() }}</span><button class="icon-button" aria-label="Dismiss error" (click)="error.set('')"><petrix-icon name="close" /></button></div> }
+      @if (info()) { <div class="notice success" role="status"><span>{{ info() }}</span><button class="icon-button" aria-label="Dismiss message" (click)="info.set('')"><petrix-icon name="close" /></button></div> }
+      @if (loading()) { <div class="loading-state"><span class="spinner"></span>Loading your workspace…</div> }
+      @else if (settingsMode) {
+        <div class="settings-breadcrumb">Settings <span>/</span> Workspace <span>/</span> Roles &amp; permissions</div>
+        <section class="config-card roles-card"><div class="section-heading"><div><h2>Roles &amp; permissions</h2><p>Choose who can create, configure, import, and delete AI agents.</p></div><span class="section-icon"><petrix-icon name="lock" /></span></div>
+          @if (roles()) {
+            <form (ngSubmit)="saveRoles()"><div class="roles-table"><div class="role-table-head"><span>Workspace role</span><span>Manage AI Agents</span></div>
+              <div class="role-row"><div><strong>Owner</strong><p>Full workspace access</p></div><input type="checkbox" checked disabled aria-label="Owner can manage AI agents"></div>
+              <div class="role-row"><div><strong>Administrator</strong><p>Manage workspace settings and permissions</p></div><input type="checkbox" [(ngModel)]="rolesAdmin" name="adminPermission" [disabled]="!!busy()" aria-label="Allow administrators to manage AI agents"></div>
+              <div class="role-row"><div><strong>Member</strong><p>Collaborate within the workspace</p></div><input type="checkbox" [(ngModel)]="rolesMember" name="memberPermission" [disabled]="!!busy()" aria-label="Allow members to manage AI agents"></div>
+            </div><div class="section-footer"><button class="btn btn-primary" [disabled]="!!busy() || !dirty()">@if (busy() === 'roles') { <span class="spinner"></span> }Save permissions</button><span class="field-note">Owners always retain this permission.</span></div></form>
+          }
+        </section>
+        <section class="config-card plan-card"><h2>Workspace plan</h2><div class="plan-summary"><span class="plan-label">{{ usage().plan_name }}</span><span>{{ usage().count }} of {{ usage().agent_limit }} agents</span><span>{{ usage().language_limit }} languages per agent</span></div><p class="field-note">Your workspace plan determines its agent and language capacity.</p></section>
+      }
+      @else if (!selected()) {
+        <section class="empty-state"><span class="empty-icon"><petrix-icon name="spark" /></span><div class="eyebrow">A new beginning</div><h2>Create your next AI agent</h2><p>Give it a name, choose a language, and make it your own.</p><button class="btn btn-primary" (click)="openModal('choose')" [disabled]="!canManage() || atCapacity()"><petrix-icon name="plus" />Create AI agent</button>@if (!canManage()) { <p class="field-note">Ask a workspace administrator for the Manage AI Agents permission.</p> }</section>
+      }
+      @else if (selected(); as agent) {
+        @if (!canManage()) { <div class="read-only-notice"><petrix-icon name="lock" />You can view these settings. Ask an administrator for permission to make changes.</div> }
+        @if (activeTab() === 'Agent') {
+          <div class="configuration-layout"><div class="configuration-sections">
+            <section class="config-card" id="personalization"><div class="section-heading"><div><h2>Personalization</h2><p>Shape how your agent understands and responds.</p></div><span class="section-icon"><petrix-icon name="spark" /></span></div>
+              <form (ngSubmit)="save('personalization')"><fieldset [disabled]="!canManage() || !!busy()">
+                <label class="toggle-row"><input class="toggle-input" type="checkbox" [(ngModel)]="llmEnabled" name="llm"><span class="toggle-switch"></span><span><strong>Large language model</strong><span class="field-note">Allow Groq intent recognition and configured generative replies when no workflow matches.</span></span></label>
+                <div class="field"><label for="persona">Agent persona</label><textarea id="persona" [(ngModel)]="persona" name="persona" rows="10" maxlength="12000" placeholder="Describe your agent’s role, tone, instructions, and behaviour."></textarea><div class="field-meta"><span class="field-note">Give your agent clear instructions and a purpose.</span><span>{{ persona.length }} / 12,000</span></div></div>
+                <div class="section-footer"><button class="btn btn-primary" [disabled]="!dirty('personalization')">@if (busy() === 'personalization') { <span class="spinner"></span> }Save</button>@if (dirty('personalization')) { <span class="draft-label">Unsaved changes</span> }</div>
+              </fieldset></form>
+            </section>
+            <section class="config-card" id="languages"><div class="section-heading"><div><h2>Languages</h2><p>Select the languages supported by your agent’s workflows.</p></div><span class="section-icon"><petrix-icon name="globe" /></span></div>
+              <form (ngSubmit)="save('languages')"><fieldset [disabled]="!canManage() || !!busy()">
+                <div class="field"><label id="languages-label">Languages</label><div class="language-picker"><div class="language-trigger" aria-labelledby="languages-label"><div class="language-chips">@for (code of assignedLanguages; track code) { <span class="language-chip">{{ languageName(code) }}<button type="button" [attr.aria-label]="'Remove ' + languageName(code)" (click)="toggleLanguage(code)"><petrix-icon name="close" /></button></span> }</div><button type="button" class="icon-button" aria-label="Choose languages" [attr.aria-expanded]="languageOpen()" (click)="languageOpen.set(!languageOpen())"><petrix-icon name="chevron" /></button></div>
+                  @if (languageOpen()) { <div class="language-dropdown"><input aria-label="Find a language" class="dropdown-search" placeholder="Find a language…" [(ngModel)]="languageSearch" name="languageSearch"><div class="language-options">@for (language of filteredLanguages(); track language.code) { <label><input type="checkbox" [checked]="assignedLanguages.includes(language.code)" [disabled]="!assignedLanguages.includes(language.code) && assignedLanguages.length >= usage().language_limit" (change)="toggleLanguage(language.code)"><span>{{ language.name }}</span></label> }</div><p>{{ assignedLanguages.length }} / {{ usage().language_limit }} languages selected</p></div> }
+                </div><span class="field-note">Translate workflow content manually for each assigned language.</span></div>
+                <div class="field"><label for="default-language">Default language</label><select id="default-language" [(ngModel)]="defaultLanguage" name="defaultLanguage">@for (code of assignedLanguages; track code) { <option [value]="code">{{ languageName(code) }}</option> }</select><span class="field-note">The fallback when another configured language does not match.</span></div>
+                <div class="section-footer"><button class="btn btn-primary" [disabled]="!dirty('languages')">@if (busy() === 'languages') { <span class="spinner"></span> }Save</button>@if (dirty('languages')) { <span class="draft-label">Unsaved changes</span> }</div>
+              </fieldset></form>
+            </section>
+            <section class="config-card" id="identity"><div class="section-heading"><div><h2>Settings</h2><p>The identity your audience will see.</p></div><span class="section-icon"><petrix-icon name="settings" /></span></div>
+              <form (ngSubmit)="save('identity')"><fieldset [disabled]="!canManage() || !!busy()"><div class="avatar-editor"><div class="agent-avatar large">@if (identityPreview || (!identityRemove && agent.avatar_url)) { <img [src]="identityPreview || agent.avatar_url || ''" alt="Agent avatar preview"> } @else { {{ initialsFor(identityName) }} }</div><div><div class="avatar-buttons"><label class="btn btn-secondary upload-button" [class.disabled]="!canManage() || !!busy()"><petrix-icon name="upload" />Upload<input type="file" accept="image/png,image/jpeg,image/gif" class="sr-only" (change)="chooseAvatar($event, 'identity')" aria-label="Upload agent avatar"></label><button type="button" class="btn btn-secondary" (click)="removeAvatar('identity')" [disabled]="!identityFile && (!agent.avatar_url || identityRemove)">Remove</button></div><p class="field-note">PNG, JPEG, or GIF up to 10 MB</p></div></div>
+                <div class="field"><label for="agent-name">Name</label><input id="agent-name" [(ngModel)]="identityName" name="identityName" required maxlength="100"><span class="field-note">The name shown in messaging applications.</span></div><div class="section-footer"><button class="btn btn-primary" [disabled]="!dirty('identity') || !identityName.trim()">@if (busy() === 'identity') { <span class="spinner"></span> }Save</button>@if (dirty('identity')) { <span class="draft-label">Unsaved changes</span> }</div>
+              </fieldset></form>
+              <div class="export-row"><span>Bring these settings to another workspace.</span><button type="button" class="text-button" (click)="exportAgent()" [disabled]="!canManage() || !!busy()"><petrix-icon name="download" />Export AI agent</button></div>
+            </section>
+            <section class="config-card danger-card" id="danger"><h2>Danger zone</h2><p>Permanently delete this AI agent, its configuration, versions, and network connections. This action cannot be undone.</p><p class="field-note">Historical chat logs are retained. Move its audience to another agent before deleting an agent used by published channels.</p><button type="button" class="btn btn-danger" (click)="openModal('delete')" [disabled]="!canManage() || !!busy()"><petrix-icon name="trash" />Delete AI agent</button></section>
+          </div><nav class="section-nav" aria-label="Agent settings sections">@for (section of [{id:'personalization',name:'Personalization'},{id:'languages',name:'Languages'},{id:'identity',name:'Settings'},{id:'danger',name:'Danger zone'}]; track section.id) { <button [class.active]="activeSection === section.id" (click)="jump(section.id)">{{ section.name }}</button> }</nav></div>
+        }
+        @else if (activeTab() === 'Workflows') {
+          <petrix-workflows [agent]="agent" [canManage]="canManage()" [languages]="options()?.languages || []" (busyChange)="busy.set($event ? 'workflows' : '')" (saved)="workflowRevision.set($event)" />
+        }
+        @else if (activeTab() === 'Voice') {
+          <section class="config-card tab-card"><div class="section-heading"><div><h2>Voice</h2><p>Set the voice preferences for this agent.</p></div><span class="section-icon"><petrix-icon name="voice" /></span></div><div class="subtle-notice">No voice channels are connected yet. Your preferences can be saved now.</div>
+            <form (ngSubmit)="save('voice')"><fieldset [disabled]="!canManage() || !!busy()"><label class="toggle-row"><input class="toggle-input" type="checkbox" [(ngModel)]="voiceEnabled" name="voiceEnabled"><span class="toggle-switch"></span><span><strong>Enable voice</strong><span class="field-note">Use voice where connected channels support it.</span></span></label><div class="field"><label for="voice-name">Preferred voice</label><input id="voice-name" [(ngModel)]="voiceName" name="voiceName" maxlength="100" placeholder="Voice name or identifier"><span class="field-note">Choose the voice supported by your voice provider.</span></div><div class="field"><label for="voice-speed">Speaking speed <span class="range-value">{{ voiceSpeed }}×</span></label><input id="voice-speed" type="range" min="0.5" max="2" step="0.1" [(ngModel)]="voiceSpeed" name="voiceSpeed"><div class="range-labels"><span>Slower · 0.5×</span><span>Faster · 2×</span></div></div><button class="btn btn-primary" [disabled]="!dirty('voice')">@if (busy() === 'voice') { <span class="spinner"></span> }Save</button></fieldset></form>
+          </section>
+        }
+        @else if (activeTab() === 'Versions') {
+          <section class="config-card tab-card"><div class="section-heading"><div><h2>Versions</h2><p>Review or restore saved agent settings. Workflow revisions are managed separately.</p></div><span class="version-badge">Version {{ agent.revision }}</span></div>
+            @if (tabLoading() && !versions().length) { <div class="loading-state"><span class="spinner"></span>Loading versions…</div> }
+            <div class="version-list">@for (version of versions(); track version.number) { <article class="version-row"><span class="timeline-icon"><petrix-icon name="history" /></span><div><strong>Version {{ version.number }} @if (version.number === agent.revision) { <span class="current-badge">Current</span> }</strong><p>{{ version.section | titlecase }} · {{ version.created_at | date:'medium' }}</p><span class="field-note">{{ version.actor }}</span></div><button class="btn btn-secondary btn-small" (click)="viewVersion(version.number)" [disabled]="!!busy()">View</button></article> }</div>
+            @if (hasMoreVersions()) { <button class="text-button" (click)="loadTab(true)" [disabled]="tabLoading()">Load more versions</button> }
+          </section>
+        }
+        @else if (activeTab() === 'Change log') {
+          <section class="config-card tab-card"><div class="section-heading"><div><h2>Change log</h2><p>A history of changes to this agent.</p></div><span class="section-icon"><petrix-icon name="history" /></span></div>
+            @if (tabLoading() && !changes().length) { <div class="loading-state"><span class="spinner"></span>Loading history…</div> }
+            <div class="change-list">@for (change of changes(); track change.id) { <article class="change-row"><span class="change-dot"></span><div><strong>{{ change.summary }}</strong><p>{{ change.actor }} · {{ change.created_at | date:'medium' }}</p>@if (change.revision) { <span class="field-note">Version {{ change.revision }}</span> }</div></article> }</div>
+            @if (hasMoreChanges()) { <button class="text-button" (click)="loadTab(true)" [disabled]="tabLoading()">Load more changes</button> }
+          </section>
+        }
+        @else if (activeTab() === 'Network') {
+          <section class="config-card tab-card"><div class="section-heading"><div><h2>Agent network</h2><p>Map the agents that should work together in your workspace.</p></div><span class="section-icon"><petrix-icon name="nodes" /></span></div>
+            @if (tabLoading()) { <div class="loading-state"><span class="spinner"></span>Loading network…</div> }
+            <div class="network-map"><div class="network-source"><span class="agent-avatar medium">@if (agent.avatar_url) { <img [src]="agent.avatar_url" alt=""> } @else { {{ initialsFor(agent.name) }} }</span><strong>{{ agent.name }}</strong><small>Selected agent</small></div><div class="network-targets">@for (edge of outgoing(); track edge.id) { <div class="network-link"><petrix-icon name="arrow" /><div class="network-node"><petrix-icon name="spark" /><strong>{{ nodeName(edge.target_id) }}</strong><button class="icon-button" aria-label="Remove connection" [disabled]="!canManage() || !!busy()" (click)="disconnectAgent(edge.id)"><petrix-icon name="close" /></button></div></div> } @empty { <div class="network-unconnected"><petrix-icon name="nodes" /><span>No outgoing connections yet</span></div> }</div></div>
+            @if (canManage()) { <form class="network-create" (ngSubmit)="connectAgent()"><div class="field"><label for="connect-target">Connect another agent</label><select id="connect-target" [(ngModel)]="connectTarget" name="connectTarget" [disabled]="!!busy()"><option value="">Choose an agent</option>@for (node of connectionTargets(); track node.id) { <option [value]="node.id">{{ node.name }}</option> }</select></div><button class="btn btn-primary" [disabled]="!connectTarget || !!busy()">Connect</button></form> }
+            @if (incoming().length) { <div class="incoming"><h3>Incoming connections</h3>@for (edge of incoming(); track edge.id) { <p><petrix-icon name="arrow" />{{ nodeName(edge.source_id) }} <span>→ {{ agent.name }}</span></p> }</div> }
+          </section>
+        }
+      }
+    </div>
+    <footer class="workspace-footer"><span>Petrix AI <span class="footer-dot">•</span> Your conversations, connected.</span>@if (selected() && !settingsMode) { <span>Version {{ selected()?.revision }} · {{ selected()?.updated_at | date:'shortTime' }}</span> }</footer>
+  </section>
+  @if (!settingsMode) {
+    @if (testerOpen()) { <button class="tester-backdrop" aria-label="Close agent tester" (click)="testerOpen.set(false)"></button> }
+    <aside class="tester-panel" [class.open]="testerOpen()" aria-label="Agent tester"><button class="icon-button tester-close" aria-label="Close agent tester" (click)="testerOpen.set(false)"><petrix-icon name="close" /></button>
+      <petrix-workflow-tester [agent]="selected()" [canManage]="canManage()" [languages]="options()?.languages || []" [savedRevision]="workflowRevision()" [resetKey]="testerResetKey()" (busyChange)="testerBusy.set($event)" />
+    </aside>
+  }
+</main>
+<dialog #agentDialog class="agent-dialog" [class.choose-dialog]="modal() === 'choose'" aria-labelledby="dialog-title" (cancel)="onDialogCancel($event)" (click)="onDialogClick($event)">
+  <div class="dialog-inner"><header class="dialog-header"><div>@if (modal() === 'create' || modal() === 'import') { <button class="icon-button back-button" aria-label="Back to creation options" (click)="openModal('choose')" [disabled]="!!busy()"><petrix-icon name="arrow" /></button> }<h2 id="dialog-title">{{ modal() === 'delete' ? 'Delete AI agent' : modal() === 'version' ? 'Agent version' : modal() === 'import' ? 'Import AI agent' : 'Create AI agent' }}</h2></div><button class="icon-button" aria-label="Close dialog" (click)="closeModal()" [disabled]="!!busy()"><petrix-icon name="close" /></button></header>
+    @if (modalError()) { <div class="notice" role="alert">{{ modalError() }}</div> }
+    @if (modal() === 'choose') { <p class="dialog-description">Give your next conversation a new beginning.</p><div class="create-choices"><button (click)="openModal('create')" [disabled]="atCapacity()"><span class="choice-icon"><petrix-icon name="plus" /></span><h3>New AI agent</h3><p>Build an agent with its own identity and language.</p><span class="choice-link">Create an agent <petrix-icon name="arrow" /></span></button><button (click)="openModal('import')" [disabled]="atCapacity()"><span class="choice-icon"><petrix-icon name="upload" /></span><h3>Import AI agent</h3><p>Bring an exported Petrix AI agent into this workspace.</p><span class="choice-link">Upload an export <petrix-icon name="arrow" /></span></button></div><p class="dialog-capacity">{{ usage().count }} of {{ usage().agent_limit }} agents used on your {{ usage().plan_name }} plan.</p> }
+    @else if (modal() === 'create') {
+      <form (ngSubmit)="createAgent()"><fieldset [disabled]="!!busy()"><div class="avatar-editor"><div class="agent-avatar large">@if (createPreview) { <img [src]="createPreview" alt="New agent avatar"> } @else { {{ initialsFor(createName) }} }</div><div><div class="avatar-buttons"><label class="btn btn-secondary upload-button"><petrix-icon name="upload" />Upload<input class="sr-only" type="file" accept="image/png,image/jpeg,image/gif" (change)="chooseAvatar($event,'create')" aria-label="Upload new agent avatar"></label><button type="button" class="btn btn-secondary" (click)="removeAvatar('create')" [disabled]="!createFile">Remove</button></div><p class="field-note">PNG, JPEG, or GIF up to 10 MB</p></div></div><div class="field"><label for="create-name">Name</label><input id="create-name" [(ngModel)]="createName" name="createName" required maxlength="100"><span class="field-note">The name your audience will see.</span></div><div class="field"><label for="create-language">Default language</label><select id="create-language" [(ngModel)]="createLanguage" name="createLanguage">@for (language of options()?.languages; track language.code) { <option [value]="language.code">{{ language.name }}</option> }</select></div><div class="dialog-actions"><button type="button" class="btn btn-secondary" (click)="closeModal()">Cancel</button><button class="btn btn-primary" [disabled]="!createName.trim() || atCapacity()">@if (busy() === 'create') { <span class="spinner"></span> }Create</button></div></fieldset></form>
+    }
+    @else if (modal() === 'import') {
+      <form (ngSubmit)="importAgent()"><p class="dialog-description">Upload a JSON file exported from Petrix AI. It includes the agent’s identity, persona, languages, and voice preferences.</p><label class="import-drop"><petrix-icon name="upload" /><strong>{{ importFile?.name || 'Choose a Petrix agent export' }}</strong><span>JSON · up to 15 MB</span><input type="file" accept=".json,application/json" [disabled]="!!busy()" (change)="chooseImport($event)" aria-label="Choose Petrix AI agent JSON file"></label>@if (importPreview) { <div class="import-preview"><span class="agent-avatar medium">{{ initialsFor(importPreview.name) }}</span><div><strong>{{ importPreview.name }}</strong><p>@for (code of importPreview.languages; track code; let last = $last) { {{ languageName(code) }}{{ last ? '' : ', ' }} }</p></div><petrix-icon name="check" /></div> }<p class="field-note">Import creates a new agent. It does not replace an existing agent.</p><div class="dialog-actions"><button type="button" class="btn btn-secondary" (click)="closeModal()" [disabled]="!!busy()">Cancel</button><button class="btn btn-primary" [disabled]="!importFile || !!busy() || atCapacity()">@if (busy() === 'import') { <span class="spinner"></span> }Import agent</button></div></form>
+    }
+    @else if (modal() === 'delete') {
+      <form (ngSubmit)="deleteAgent()"><div class="delete-warning"><petrix-icon name="trash" /><p>This permanently deletes <strong>{{ selected()?.name }}</strong>, its settings, versions, and connections. Historical chat logs are retained.</p></div><div class="field"><label for="delete-confirm">Type <strong>{{ selected()?.name }}</strong> to confirm</label><input id="delete-confirm" [(ngModel)]="confirmationName" name="confirmationName" autocomplete="off" [disabled]="!!busy()"></div><div class="dialog-actions"><button type="button" class="btn btn-secondary" (click)="closeModal()" [disabled]="!!busy()">Cancel</button><button class="btn btn-danger" [disabled]="confirmationName !== selected()?.name || !!busy()">@if (busy() === 'delete') { <span class="spinner"></span> }Delete permanently</button></div></form>
+    }
+    @else if (modal() === 'version') {
+      @if (versionDetail(); as detail) { <div class="version-preview"><span class="version-badge">Version {{ detail.number }}</span><h3>{{ detail.configuration.name }}</h3><dl><div><dt>Large language model</dt><dd>{{ detail.configuration.llm_enabled ? 'Enabled' : 'Disabled' }}</dd></div><div><dt>Default language</dt><dd>{{ languageName(detail.configuration.default_language) }}</dd></div><div><dt>Languages</dt><dd>@for (code of detail.configuration.languages; track code; let last = $last) { {{ languageName(code) }}{{ last ? '' : ', ' }} }</dd></div><div><dt>Voice</dt><dd>{{ detail.configuration.voice_enabled ? 'Enabled' : 'Disabled' }} · {{ detail.configuration.voice_speed }}×</dd></div><div><dt>Avatar</dt><dd>{{ detail.has_avatar ? 'Included' : 'Default avatar' }}</dd></div></dl><h4>Agent persona</h4><pre>{{ detail.configuration.persona || 'No custom persona' }}</pre></div><p class="field-note">Restoring updates the saved configuration and preserves the existing version history.</p><div class="dialog-actions"><button class="btn btn-secondary" (click)="closeModal()" [disabled]="!!busy()">Close</button><button class="btn btn-primary" (click)="restoreVersion()" [disabled]="!canManage() || !!busy() || detail.number === selected()?.revision">@if (busy() === 'restore') { <span class="spinner"></span> }Restore this version</button></div> }
+      @else if (busy()) { <div class="loading-state"><span class="spinner"></span>Loading version…</div> }
+    }
+  </div>
+</dialog>

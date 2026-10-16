@@ -1,0 +1,12 @@
+<petrix-auth-shell>
+  <div class="auth-status-icon"><petrix-icon name="mail" /></div>
+  <div class="eyebrow">Connect your account</div>
+  <h1>Confirm your email</h1>
+  <p class="auth-subtitle">Verify an email address you can access. If you already use Petrix AI, enter that account's email so your sign-in methods stay connected.</p>
+  @if (error()) { <div class="notice" role="alert">{{ error() }}</div> }
+  <form [formGroup]="form" (ngSubmit)="submit()">
+    <div class="field"><label for="provider-email">Email address</label><input id="provider-email" type="email" formControlName="email" autocomplete="email" placeholder="you@example.com">@if (form.controls.email.touched && form.controls.email.invalid) { <span class="field-error">Enter a valid email address.</span> }</div>
+    <button type="submit" class="btn btn-primary btn-full" [disabled]="busy() || !ready()">@if (busy()) { <span class="spinner" aria-hidden="true"></span> Sending… } @else { Send verification link <petrix-icon name="arrow" /> }</button>
+  </form>
+  <a class="back-link" routerLink="/login">Return to sign in</a>
+</petrix-auth-shell>

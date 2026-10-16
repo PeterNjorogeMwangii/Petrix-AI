@@ -1,0 +1,9 @@
+<petrix-auth-shell>
+  <div class="auth-status-icon"><petrix-icon name="lock" /></div>
+  <div class="eyebrow">Secure, simple, passwordless</div>
+  <h1>You're almost in</h1>
+  <p class="auth-subtitle">Continue to confirm your email and sign in to your Petrix AI workspace.</p>
+  @if (error()) { <div class="notice" role="alert">{{ error() }}</div> }
+  @if (available()) { <button class="btn btn-primary btn-full" (click)="verify()" [disabled]="busy()">@if (busy()) { <span class="spinner" aria-hidden="true"></span> Verifying… } @else { Continue to Petrix AI <petrix-icon name="arrow" /> }</button> }
+  <a class="back-link" routerLink="/login">Request a new sign-in link</a>
+</petrix-auth-shell>
