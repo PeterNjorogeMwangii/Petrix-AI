@@ -1,27 +1,29 @@
-# Petrix AI — Workflows, Send message, Set variable, and Jump
+# Petrix AI — Workflows, Ask survey, Send message, Set variable, and Jump
 
-A new codebase for a conversational AI platform. The application implements passwordless account creation, workspace onboarding, AI agent management, a persisted workflow builder, and a conversation tester that executes saved Send message and Set variable actions. Version `0.4.0` adds fuzzy → semantic embeddings → Groq intent recognition while preserving permanent step numbers. See [docs/INTENT_MATCHING.md](docs/INTENT_MATCHING.md) for setup and [docs/SET_VARIABLE.md](docs/SET_VARIABLE.md) for the complaint-reference example.
+A new codebase for a conversational AI platform. The application implements passwordless account creation, workspace onboarding, AI agent management, a persisted workflow builder, and a conversation tester that executes saved Send message, Ask survey, Set variable, and Jump actions. Version `0.4.0` adds fuzzy → semantic embeddings → Groq intent recognition while preserving permanent step numbers. See [docs/INTENT_MATCHING.md](docs/INTENT_MATCHING.md) for setup and [docs/SET_VARIABLE.md](docs/SET_VARIABLE.md) for the complaint-reference example.
 
-Version `0.4.1` adds **Jump**: choose any saved trigger or action in this agent's workflow, search by name or permanent number, and redirect the conversation to that step. See [docs/JUMP.md](docs/JUMP.md) for setup, execution rules, and the return-to-menu example. This update adds no dependency or migration; schema head remains `0004`. Copy the updated source into your existing project, keep your `backend/.env`, and restart the API and Angular.
+Version `0.4.1` adds **Jump**: choose any saved trigger or action in this agent's workflow, search by name or permanent number, and redirect the conversation to that step. See [docs/JUMP.md](docs/JUMP.md) for setup, execution rules, and the return-to-menu example. That Jump release added no migration. The current release also includes Ask survey and migration `0005`; follow the upgrade steps below.
+
+Version `0.5.0` adds **Ask survey** with sequential Text, Number, Email, Phone, Attachment, and Attachment(s) questions, quick answers, skip, typed variables, validation replies, and actual file uploads/downloads in the tester. See [docs/ASK_SURVEY.md](docs/ASK_SURVEY.md). Run `python -m alembic upgrade head` **from backend** to apply migration `0005` before restarting the API. Keep your existing environment files. No new dependency is introduced by this survey update.
 
 ## Stack and compatibility
 
 | Layer | Implementation |
 | --- | --- |
 | Frontend | Angular 21.2, standalone components, reactive forms, lazy routes |
-| Backend runtime | Python 3.9.12, verified with that exact interpreter |
+| Backend runtime | Python 3.9.12-compatible source; latest update tested on Python 3.12.14 |
 | API | FastAPI 0.128.8 |
 | Database | PostgreSQL through SQLAlchemy 2 and psycopg 3.2 |
 | Authentication | Authlib 1.6.12, email magic links, revocable cookie sessions |
-| Schema changes | Alembic 1.16.5, frozen migrations `0001` through `0004` |
+| Schema changes | Alembic 1.16.5, frozen migrations `0001` through `0005` |
 
-The compatibility update replaces Python 3.10 union annotations with `typing.Optional` and pins runtime dependencies, including their transitive dependencies, to versions that install on Python 3.9.12. Windows-specific dependencies use platform markers. Version `0.4.0` adds Python 3.9-compatible Groq SDK and CPU embedding dependencies. Migration `0004` remains the schema head.
+The compatibility update replaces Python 3.10 union annotations with `typing.Optional` and pins runtime dependencies, including their transitive dependencies, to versions that install on Python 3.9.12. Windows-specific dependencies use platform markers. Version `0.4.0` adds Python 3.9-compatible Groq SDK and CPU embedding dependencies. Migration `0005` is the schema head and adds conversation file storage.
 
 Use the revised `requirements.lock.txt` when installing. Updating only the old FastAPI pin is insufficient because other original dependencies also require a newer Python version.
 
 ## Upgrade your running installation
 
-Follow [docs/INTENT_MATCHING.md](docs/INTENT_MATCHING.md). Copy the updated source over your existing project, keep `backend/.env` and your virtual environment, and install `backend/requirements.lock.txt`. Add `GROQ_API_KEY` to your existing environment file and prepare the local embedding model. Run `python -m alembic upgrade head` **from the backend directory** before restarting the API and Angular. Schema head remains `0004`; existing accounts, workspace settings, workflows, step numbers, and chat history are retained.
+Follow [docs/INTENT_MATCHING.md](docs/INTENT_MATCHING.md). Copy the updated source over your existing project, keep `backend/.env` and your virtual environment, and install `backend/requirements.lock.txt`. Add `GROQ_API_KEY` to your existing environment file and prepare the local embedding model. Run `python -m alembic upgrade head` **from the backend directory** before restarting the API and Angular. Schema head is `0005`; existing accounts, workspace settings, workflows, step numbers, and chat history are retained.
 
 ## Implemented features
 
@@ -51,7 +53,8 @@ Follow [docs/INTENT_MATCHING.md](docs/INTENT_MATCHING.md). Copy the updated sour
 - Set variable with a dedicated editor, bounded Python expressions, typed session data, system-variable reads, and a tester variable inspector.
 - Custom variable placeholders in messages and quick replies, conversation persistence, and transactional error handling.
 - Jump with a searchable trigger/action picker, permanent destination numbers, selected-target card, cross-branch execution, destination waits/continuations, reference validation, and loop protection.
-- Individual backend folders for all 19 action types. Send message, Set variable, and Jump are implemented; the other catalogue entries are reserved for later configuration.
+- Ask survey with 1–50 fields, all six answer formats, up to 13 quick answers per question, skip, typed session variables, protected file uploads/downloads, and exact branch continuation.
+- Individual backend folders for all 19 action types. Send message, Ask survey, Set variable, and Jump are implemented; the other catalogue entries are reserved for later configuration.
 - Session revocation on sign-out.
 - Google and Microsoft OpenID Connect integration when backend credentials are configured.
 

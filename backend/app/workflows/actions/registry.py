@@ -1,6 +1,8 @@
 """Explicit allow-list: never import an action path supplied by a client."""
 from importlib import import_module
 
+from app.workflows.actions.ask_survey.config import AskSurveyConfig
+from app.workflows.actions.ask_survey.handler import execute as ask_survey
 from app.workflows.actions.jump.config import JumpConfig
 from app.workflows.actions.jump.handler import execute as jump
 from app.workflows.actions.send_message.config import SendMessageConfig
@@ -18,8 +20,8 @@ ACTIONS = {key: import_module("app.workflows.actions." + key).DEFINITION for key
 
 
 def config_for(action_type):
-    return {"send_message": SendMessageConfig, "set_variable": SetVariableConfig, "jump": JumpConfig}[action_type]
+    return {"send_message": SendMessageConfig, "set_variable": SetVariableConfig, "jump": JumpConfig, "ask_survey": AskSurveyConfig}[action_type]
 
 
 def handler_for(action_type):
-    return {"send_message": send_message, "set_variable": set_variable, "jump": jump}[action_type]
+    return {"send_message": send_message, "set_variable": set_variable, "jump": jump, "ask_survey": ask_survey}[action_type]

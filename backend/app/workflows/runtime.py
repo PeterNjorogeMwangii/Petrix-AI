@@ -2,6 +2,7 @@
 from copy import deepcopy
 
 from fastapi import HTTPException
+from app.workflows.actions.ask_survey import handler as survey
 from app.workflows.actions.jump.handler import JumpTo
 from app.workflows.actions.registry import handler_for
 from app.workflows.chat_script import ScriptError
@@ -69,6 +70,11 @@ def execute(document, agent, state, event, matching=None):
     trace, output = [], []
     trigger = None
     blocked = False
+    survey_resumed = False
+
+    def finish(matched):
+        state.update({"stack": stack, "language": context.language, "workflow_revision": document.revision})
+        return state, output, trace, matched
 
     def choose(nodes, scope):
         nonlocal blocked
@@ -78,17 +84,41 @@ def execute(document, agent, state, event, matching=None):
         blocked = decision.needs_clarification
         return decision.node
 
+    system_event = event["event"] in {"chat_started", "chat_closed", "chat_timeout", "ai_timeout"}
+    if not same_revision or system_event:
+        state.pop("survey", None)
+    if state.get("survey"):
+        node = index.get(state["survey"]["node_id"])
+        if not node or node["type"] != "ask_survey" or not enabled.get(node["id"]):
+            raise HTTPException(422, "This survey is no longer available. Restart the tester.")
+        if event["event"] not in {"message_received", "attachment_received"}:
+            return finish(True)
+        token = event.get("survey_answer_token")
+        if token is not None and token != state["survey"]["answer_token"]:
+            raise HTTPException(409, "This answer belongs to an earlier survey question. Use the current question.")
+        try:
+            field = survey.active_field(node, state)
+            result, outcome = survey.answer(node, context)
+        except ScriptError as error:
+            raise HTTPException(422, "Step '{}': {}".format(node["name"], error)) from None
+        trace.append({"node_id": node["id"], "node_number": node["number"], "name": node["name"],
+            "type": "ask_survey", "outcome": outcome, "field_id": field["id"], "variable_name": field["variable_name"]})
+        if result is not None:
+            output.append(result)
+            return finish(True)
+        survey_resumed = True
+
     pending_root = state.get("intent", {}).get("needs_clarification") and state.get("intent", {}).get("scope") == "root"
-    if stack and not pending_root and event["event"] not in {"chat_started", "chat_closed", "chat_timeout", "ai_timeout"}:
+    if not survey_resumed and stack and not pending_root and not system_event:
         # The top frame contains the sibling trigger alternatives where execution paused.
         trigger = choose([index[key] for key in stack[-1] if key in index], "nested")
         if trigger:
             stack.pop()
-    if not trigger and not blocked:
+    if not survey_resumed and not trigger and not blocked:
         trigger = choose(document.nodes, "root")
         if trigger:
             stack = []
-    if matching is not None:
+    if matching is not None and not survey_resumed:
         state["intent"] = matching.report
     if blocked:
         output.append({"content": matching.last.clarification_question, "quick_replies": [], "source": "clarification", "node_id": None})
@@ -96,6 +126,7 @@ def execute(document, agent, state, event, matching=None):
     if trigger:
         trace.append({"node_id": trigger["id"], "node_number": trigger["number"], "name": trigger["name"], "type": trigger["type"], "outcome": "matched"})
         stack.append([node["id"] for node in trigger["children"]])
+    if trigger or survey_resumed:
         steps = 0
         jumps = set()
         while stack:
@@ -114,6 +145,12 @@ def execute(document, agent, state, event, matching=None):
             stack[-1].pop(0)
             try:
                 result = handler_for(node["type"])(node["config"], context)
+                if isinstance(result, survey.SurveyWait):
+                    output.append(survey.question(node, context))
+                    trace.append({"node_id": node["id"], "node_number": node["number"], "name": node["name"],
+                        "type": "ask_survey", "outcome": "waiting_for_answer"})
+                    stack.append([child["id"] for child in node["children"]])
+                    break
                 if isinstance(result, JumpTo):
                     target = index.get(result.target_node_id)
                     if not target or not enabled.get(result.target_node_id):
@@ -134,5 +171,4 @@ def execute(document, agent, state, event, matching=None):
                 output.append({**result, "node_id": node["id"], "source": node["type"]})
             trace.append({"node_id": node["id"], "node_number": node["number"], "name": node["name"], "type": node["type"], "outcome": "executed"})
             stack.append([child["id"] for child in node["children"]])
-    state.update({"stack": stack, "language": context.language, "workflow_revision": document.revision})
-    return state, output, trace, trigger is not None or blocked
+    return finish(trigger is not None or survey_resumed or blocked)

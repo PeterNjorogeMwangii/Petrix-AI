@@ -58,6 +58,7 @@ class TesterEvent(StrictModel):
     content: str = Field(default="", max_length=4000)
     attachment: Optional[AttachmentEvent] = None
     rating: Optional[int] = Field(default=None, ge=1, le=5)
+    survey_answer_token: Optional[uuid.UUID] = None
 
     @model_validator(mode="after")
     def event_fields(self):

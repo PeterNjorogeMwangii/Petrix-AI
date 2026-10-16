@@ -84,7 +84,7 @@ def validate_nodes(nodes, agent_id):
                         raise HTTPException(422, "This action will be configured in a later milestone.")
                     node["config"] = config_for(node["type"]).model_validate(node["config"]).model_dump(mode="json")
             except ValidationError as error:
-                if node["type"] in {"set_variable", "jump"}:
+                if node["type"] in {"set_variable", "jump", "ask_survey"}:
                     issue = error.errors(include_url=False, include_context=False, include_input=False)[0]
                     field = ".".join(map(str, issue["loc"]))
                     raise HTTPException(422, "Step '{}', {}: {}".format(node["name"], field, issue["msg"])) from None

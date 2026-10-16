@@ -1,6 +1,6 @@
 # Petrix AI — Layered intent matching
 
-Version `0.4.0` adds semantic embeddings and Groq intent recognition after fuzzy matching. Existing workflow UUIDs, step numbers, saved actions, and accounts are preserved. Schema head remains `0004`; this release adds no database migration.
+Version `0.4.0` adds semantic embeddings and Groq intent recognition after fuzzy matching. Existing workflow UUIDs, step numbers, saved actions, and accounts are preserved. The intent-matching release itself added no database migration. The current bundle also includes Ask survey and migration `0005`; run `python -m alembic upgrade head` from backend.
 
 ## Upgrade on Windows
 

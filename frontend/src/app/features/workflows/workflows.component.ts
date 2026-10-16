@@ -8,14 +8,15 @@ import { SendMessageEditorComponent } from './actions/send-message/send-message-
 import { SetVariableEditorComponent, variableConfigError } from './actions/set-variable/set-variable-editor.component';
 import { JumpEditorComponent } from './actions/jump/jump-editor.component';
 import { jumpConfigError, workflowJumpTargets } from './actions/jump/jump-targets';
-import { ActionDefinition, JumpConfig, SendMessageConfig, SetVariableConfig, TriggerDefinition, WorkflowDocument, WorkflowNode } from './workflow.models';
+import { AskSurveyEditorComponent, newSurveyField, surveyConfigError } from './actions/ask-survey/ask-survey-editor.component';
+import { ActionDefinition, AskSurveyConfig, JumpConfig, SendMessageConfig, SetVariableConfig, TriggerDefinition, WorkflowDocument, WorkflowNode } from './workflow.models';
 import { WorkflowsApi } from './workflows.api';
 
 interface Insertion { parentId: string | null; beforeId: string | null }
 
 @Component({
   selector: 'petrix-workflows',
-  imports: [FormsModule, NgTemplateOutlet, IconComponent, SendMessageEditorComponent, SetVariableEditorComponent, JumpEditorComponent],
+  imports: [FormsModule, NgTemplateOutlet, IconComponent, SendMessageEditorComponent, SetVariableEditorComponent, JumpEditorComponent, AskSurveyEditorComponent],
   templateUrl: './workflows.component.html', styleUrl: './workflows.component.css'
 })
 export class WorkflowsComponent implements OnChanges, OnDestroy {
@@ -41,6 +42,7 @@ export class WorkflowsComponent implements OnChanges, OnDestroy {
   editMessages: SendMessageConfig = { translations: {} };
   editVariable: SetVariableConfig = { variable_name: '', chat_script: '' };
   editJump: JumpConfig = { target_node_id: '' };
+  editSurvey: AskSurveyConfig = { fields: [] };
   examplesText = '';
   matchMode = 'approximate'; threshold = 0.65;
   attachmentTypes: string[] = [];
@@ -72,7 +74,7 @@ export class WorkflowsComponent implements OnChanges, OnDestroy {
   root() { return this.document()?.nodes.find(node => node.id === this.rootId()) || null; }
   definition(type: string) { return [...this.triggers, ...this.actions].find(value => value.type === type); }
   label(type: string) { return this.definition(type)?.name || type; }
-  actionIcon(type: string) { return type === 'set_variable' ? 'variable' : type === 'send_message' ? 'chat' : type === 'jump' ? 'jump' : 'bolt'; }
+  actionIcon(type: string) { return type === 'set_variable' ? 'variable' : type === 'send_message' ? 'chat' : type === 'jump' ? 'jump' : type === 'ask_survey' ? 'survey' : 'bolt'; }
   icon(node: WorkflowNode) { return node.kind === 'action' ? this.actionIcon(node.type) : node.type === 'attachment_received' ? 'upload' : node.type === 'message_received' ? 'chat' : node.type === 'fallback' ? 'help' : 'spark'; }
   permanent(node: WorkflowNode) { return this.triggers.some(value => value.type === node.type && value.permanent); }
   languageName(code: string) { return this.languages.find(value => value.code === code)?.name || code; }
@@ -87,6 +89,7 @@ export class WorkflowsComponent implements OnChanges, OnDestroy {
       : targets.find(target => target.id === node.id)?.ancestorsEnabled ?? true;
   }
   jumpError() { return jumpConfigError(this.editJump, this.jumpTargets(), this.jumpActive()); }
+  surveyError() { return surveyConfigError(this.editSurvey); }
   jumpTargetLabel(node: WorkflowNode) {
     const target = this.find(node.config['target_node_id']);
     return target ? `Jump to #${target.number} ${target.name}` : 'Choose a target';
@@ -109,6 +112,7 @@ export class WorkflowsComponent implements OnChanges, OnDestroy {
     if (result.type === 'send_message') result.config = structuredClone(this.editMessages);
     if (result.type === 'set_variable') result.config = structuredClone(this.editVariable);
     if (result.type === 'jump') result.config = structuredClone(this.editJump);
+    if (result.type === 'ask_survey') result.config = structuredClone(this.editSurvey);
     if (result.type === 'message_received') result.config = { ...result.config, match_mode: this.matchMode, threshold: Number(this.threshold) };
     if (result.type === 'attachment_received') result.config = { attachment_types: [...this.attachmentTypes] };
     return result;
@@ -133,6 +137,7 @@ export class WorkflowsComponent implements OnChanges, OnDestroy {
     this.editMessages = structuredClone(node.config['translations'] ? node.config as SendMessageConfig : { translations: {} });
     this.editVariable = node.type === 'set_variable' ? structuredClone(node.config as unknown as SetVariableConfig) : { variable_name: '', chat_script: '' };
     this.editJump = node.type === 'jump' ? { target_node_id: node.config['target_node_id'] || '' } : { target_node_id: '' };
+    this.editSurvey = node.type === 'ask_survey' ? structuredClone(node.config as unknown as AskSurveyConfig) : { fields: [] };
     this.matchMode = node.config['match_mode'] || 'approximate'; this.threshold = node.config['threshold'] ?? 0.65;
     this.attachmentTypes = [...(node.config['attachment_types'] || ['image', 'audio', 'video', 'file'])];
     this.examplesText = (node.config['examples']?.[this.editLanguage] || []).join('\n');
@@ -148,6 +153,7 @@ export class WorkflowsComponent implements OnChanges, OnDestroy {
   async saveEditor() {
     const value = this.editingValue(); if (!value || !this.canManage || this.busy()) return;
     if (value.type === 'jump' && this.jumpError()) { this.error.set(this.jumpError()); return; }
+    if (value.type === 'ask_survey' && this.surveyError()) { this.error.set(this.surveyError()); return; }
     if (value.type === 'set_variable') {
       const error = variableConfigError(this.editVariable);
       if (error) { this.error.set(error); return; }
@@ -211,7 +217,8 @@ export class WorkflowsComponent implements OnChanges, OnDestroy {
     if (!action.available || !this.insertion) return;
     const config = action.type === 'send_message' ? { translations: { [this.agent.default_language]: { messages: [''], quick_replies: [] } } }
       : action.type === 'set_variable' ? { variable_name: '', chat_script: '' }
-      : action.type === 'jump' ? { target_node_id: '' } : null;
+      : action.type === 'jump' ? { target_node_id: '' }
+      : action.type === 'ask_survey' ? { fields: [newSurveyField()] } : null;
     if (!config) return;
     const insertion = { ...this.insertion }; this.closeDialog();
     const node: WorkflowNode = { id: crypto.randomUUID(), kind: 'action', type: action.type, name: action.name, description: '', enabled: true,

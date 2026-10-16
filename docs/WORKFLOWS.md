@@ -1,10 +1,12 @@
-# Petrix AI — Workflows, Send message, Set variable, and Jump
+# Petrix AI — Workflows, Ask survey, Send message, Set variable, and Jump
 
 Milestone 3 implements the workflow builder, its persistence and runtime, and Send message. The next update adds Set variable with typed session data and message placeholders; see [SET_VARIABLE.md](SET_VARIABLE.md). Other action types have individual reserved backend folders and remain unavailable until their configuration and handlers are implemented.
 
 Version `0.4.0` adds layered intent matching. Follow [INTENT_MATCHING.md](INTENT_MATCHING.md) to install the new dependencies, add the Groq key, and prepare local embeddings before using the additional stages.
 
 Version `0.4.1` implements Jump. Select an existing trigger or action from the searchable numbered tree picker, then Save. The runtime leaves the source branch and resumes at the destination, including its nested waits and enclosing action continuations. Targets use UUIDs so renaming and reordering keep references intact. See [JUMP.md](JUMP.md). No new migration or dependency is required.
+
+Version `0.5.0` adds Ask survey and real file answers. See [ASK_SURVEY.md](ASK_SURVEY.md). It uses migration `0005` to store uploaded bytes with their conversation; existing workflow definitions, numbers, and data are retained.
 
 ## Upgrade on Windows
 
@@ -21,7 +23,7 @@ python -m alembic upgrade head
 python -m alembic current
 ```
 
-Use Python 3.9.12. The migration check must show `0004 (head)` before starting the API. Migration `0003` adds a workflow document for each existing agent and workflow state/metadata to tester chats. Migration `0004` numbers existing triggers and actions and adds a counter per agent. Neither migration resets your existing action configuration. Deleted greetings stay deleted, and accounts and agent settings remain intact.
+Use Python 3.9.12. The migration check must show `0005 (head)` before starting the API. Migration `0003` adds a workflow document for each existing agent and workflow state/metadata to tester chats. Migration `0004` numbers existing triggers and actions and adds a counter per agent. Migration `0005` adds file storage. These migrations retain existing action configuration. Deleted greetings stay deleted, and accounts and agent settings remain intact.
 
 ```powershell
 python -m uvicorn app.main:create_app --factory --reload --port 8000 --no-access-log
@@ -122,6 +124,7 @@ Workflow revisions are separate from agent-settings versions. Agent snapshot res
 | `backend/app/workflows/actions/send_message/config.py` | Send message validation and language schemas. |
 | `backend/app/workflows/actions/send_message/handler.py` | Random variant selection, placeholders, and quick replies. |
 | `backend/app/workflows/actions/set_variable` | Variable configuration and data-only execution handler. |
+| `backend/app/workflows/actions/ask_survey` | Survey field validation, questions, and typed answers. |
 | `backend/app/workflows/actions/jump` | UUID target configuration and a control-transfer result consumed by the runtime. |
 | `backend/app/workflows/actions/<other_action>/__init__.py` | An individual reserved module and unavailable descriptor for each later action. |
 | `frontend/src/app/features/workflows/actions/send-message` | Send message configuration UI. New action editors should get their own sibling folder. |
@@ -131,4 +134,4 @@ Workflow revisions are separate from agent-settings versions. Agent snapshot res
 | `backend/app/workflows/matching` | Fuzzy scoring, embedding adapters/cache, Groq recognition, and layered trigger selection. |
 | `backend/app/workflows/runtime.py` | Trigger matching, sequential actions, nested waits, and continuations. |
 
-Send attachment, Show carousel, Ask survey, Live agent handoff, External handoff, AI agent handoff, Create ticket, Branch, Switch language, Close chat, Send API, LLM processing, Auto fill field, Auto team match, SQL query, and Send graph are reserved for subsequent configuration work. No external handoff, ticket email, SQL, API action, or channel delivery is simulated as complete.
+Send attachment, Show carousel, Live agent handoff, External handoff, AI agent handoff, Create ticket, Branch, Switch language, Close chat, Send API, LLM processing, Auto fill field, Auto team match, SQL query, and Send graph are reserved for subsequent configuration work. No external handoff, ticket email, SQL, API action, or channel delivery is simulated as complete.

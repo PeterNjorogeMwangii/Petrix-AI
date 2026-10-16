@@ -61,6 +61,6 @@ Tester traces show the Jump's source number, `Jumped to #number`, and the destin
 
 ## Apply this update on Windows
 
-Stop FastAPI and Angular, copy this archive's source into your current `petrix-ai` folder, and keep your existing environment files, virtual environment, database, and `node_modules`. Restart both services with your usual commands. No new Python or npm dependencies are introduced by Jump, and migration head stays `0004`.
+Stop FastAPI and Angular, copy this archive's source into your current `petrix-ai` folder, and keep your existing environment files, virtual environment, database, and `node_modules`. Restart both services with your usual commands. No new Python or npm dependencies are introduced by Jump. The current bundle also includes Ask survey: run `python -m alembic upgrade head` from backend to reach `0005` before using file questions.
 
 Test by completing a complaint, confirming that the menu reappears, and selecting another menu choice. In **Last execution**, verify that the Jump points to the saved menu number.

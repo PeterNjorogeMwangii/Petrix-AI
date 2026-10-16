@@ -20,12 +20,14 @@ export class WorkflowTesterComponent implements OnChanges, OnDestroy {
   @Input() resetKey = 0;
   @Output() busyChange = new EventEmitter<boolean>();
   @ViewChild('messageList') messageList?: ElementRef<HTMLElement>;
+  @ViewChild('surveyUpload') surveyUpload?: ElementRef<HTMLInputElement>;
   private readonly api = inject(WorkflowsApi);
   readonly busy = signal(false);
   readonly error = signal('');
   readonly messages = signal<WorkflowMessage[]>([]);
   readonly result = signal<WorkflowTestResult | null>(null);
   text = ''; language = 'en';
+  selectedFiles: File[] = [];
   eventType: WorkflowEventType = 'attachment_received';
   attachmentType = 'image'; attachmentName = 'test-document.png'; rating = 5;
   private requestId = 0;
@@ -43,7 +45,7 @@ export class WorkflowTesterComponent implements OnChanges, OnDestroy {
   private setBusy(value: boolean) { this.busy.set(value); this.busyChange.emit(value); }
   async restart() {
     const request = ++this.requestId;
-    this.messages.set([]); this.result.set(null); this.error.set(''); this.text = '';
+    this.messages.set([]); this.result.set(null); this.error.set(''); this.text = ''; this.selectedFiles = [];
     if (!this.agent || !this.canManage) { this.setBusy(false); return; }
     const id = this.agent.id; this.setBusy(true);
     try {
@@ -53,7 +55,42 @@ export class WorkflowTesterComponent implements OnChanges, OnDestroy {
     finally { if (request === this.requestId) this.setBusy(false); }
   }
   private accept(result: WorkflowTestResult) {
+    if (this.result()?.survey?.answer_token !== result.survey?.answer_token) {
+      this.selectedFiles = []; if (this.surveyUpload) this.surveyUpload.nativeElement.value = '';
+    }
     this.result.set(result); this.language = result.language; this.messages.update(values => [...values, ...result.messages]); this.scroll();
+  }
+  surveyUsesFiles() { return ['attachment', 'attachments'].includes(this.result()?.survey?.answer_type || ''); }
+  surveyAnswerLabel(type: string) { return ({text:'Text',number:'Number',email:'Email',phone:'Phone',attachment:'One file',attachments:'Files'} as Record<string,string>)[type] || type; }
+  fileSize(size: number) { return size < 1024 ? `${size} B` : size < 1048576 ? `${Math.round(size / 1024)} KiB` : `${(size / 1048576).toFixed(1)} MiB`; }
+  selectFiles(event: Event) {
+    const input = event.target as HTMLInputElement;
+    const files = Array.from(input.files || []);
+    this.error.set('');
+    const maximum = this.result()?.survey?.answer_type === 'attachment' ? 1 : 10;
+    if (files.length > maximum || files.some(file => !file.size || file.size > 10485760) || files.reduce((total, file) => total + file.size, 0) > 20971520) {
+      this.error.set(`Choose up to ${maximum} non-empty file${maximum === 1 ? '' : 's'}, at most 10 MiB each and 20 MiB total.`);
+      this.selectedFiles = []; input.value = ''; return;
+    }
+    this.selectedFiles = files;
+  }
+  removeFile(index: number) {
+    this.selectedFiles = this.selectedFiles.filter((_, position) => position !== index);
+    if (this.surveyUpload) this.surveyUpload.nativeElement.value = '';
+  }
+  async uploadAnswer() {
+    const current = this.result(); const progress = current?.survey;
+    if (!this.agent || !current || !progress || !this.ready() || this.busy() || !this.selectedFiles.length || !this.surveyUsesFiles()) return;
+    const files = [...this.selectedFiles]; const request = ++this.requestId;
+    this.setBusy(true); this.error.set(''); this.scroll();
+    try {
+      const result = await this.api.uploadSurveyAnswer(this.agent.id, current.conversation_id, progress.answer_token, files, this.language);
+      if (request !== this.requestId) return;
+      this.messages.update(values => [...values, { id: crypto.randomUUID(), role: 'user',
+        content: `Uploaded: ${files.map(file => file.name).join(', ')}`, created_at: new Date().toISOString(), attachments: result.attachments || [] }]);
+      this.accept(result);
+    } catch (error) { if (request === this.requestId) this.error.set(errorMessage(error)); }
+    finally { if (request === this.requestId) this.setBusy(false); }
   }
   variableEntries() { return Object.entries(this.result()?.variables || {}).sort(([left], [right]) => left.localeCompare(right)); }
   variableText(value: unknown) { return typeof value === 'string' ? value : JSON.stringify(value, null, 2) ?? 'null'; }
@@ -93,7 +130,8 @@ export class WorkflowTesterComponent implements OnChanges, OnDestroy {
     if (!this.agent || !this.result() || this.busy()) return false;
     const request = ++this.requestId; const id = this.agent.id; this.setBusy(true); this.error.set(''); this.scroll();
     try {
-      const result = await this.api.event(id, { ...event, conversation_id: this.result()!.conversation_id, language: this.language });
+      const token = event.event === 'message_received' || event.event === 'attachment_received' ? this.result()?.survey?.answer_token : undefined;
+      const result = await this.api.event(id, { ...event, conversation_id: this.result()!.conversation_id, language: this.language, survey_answer_token: token });
       if (request !== this.requestId) return false;
       if (event.event !== 'message_received') {
         const names: Record<string, string> = { attachment_received: `Attachment test: ${this.attachmentName}`, chat_closed: 'Chat closed', collect_feedback: `CSAT submitted: ${this.rating} / 5`, chat_timeout: 'Chat timeout', ai_timeout: 'AI timeout' };

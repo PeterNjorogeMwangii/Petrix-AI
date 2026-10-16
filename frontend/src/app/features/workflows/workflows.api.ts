@@ -16,4 +16,10 @@ export class WorkflowsApi {
   event(id: string, body: WorkflowEvent) {
     return firstValueFrom(this.http.post<WorkflowTestResult>(`${this.path(id)}/tester/events`, body));
   }
+  uploadSurveyAnswer(id: string, conversationId: string, answerToken: string, files: File[], language: string) {
+    const body = new FormData();
+    body.append('conversation_id', conversationId); body.append('survey_answer_token', answerToken); body.append('language', language);
+    files.forEach(file => body.append('files', file));
+    return firstValueFrom(this.http.post<WorkflowTestResult>(`${this.path(id)}/tester/attachments`, body));
+  }
 }

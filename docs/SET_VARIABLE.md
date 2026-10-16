@@ -6,7 +6,7 @@ Set variable creates or updates data in one chat session. It does not send a mes
 
 Stop FastAPI and Angular, copy the updated project contents into your Petrix folder, and keep `backend/.env`, `.venv`, the database, and Mailpit. Python 3.9.12 remains supported. The current source includes new intent-matching dependencies; follow [INTENT_MATCHING.md](INTENT_MATCHING.md) to install them and configure the additional matching stages before restarting the services.
 
-Set variable uses the conversation JSON storage added in migration `0003`. The current release also includes migration `0004` for permanent workflow step numbers. Run `python -m alembic upgrade head` from `backend` and verify `0004 (head)` before starting the API. See [WORKFLOWS.md](WORKFLOWS.md) for the upgrade commands and numbering behaviour.
+Set variable uses the conversation JSON storage added in migration `0003`. The current release also includes migration `0004` for permanent workflow step numbers and `0005` for survey file storage. Run `python -m alembic upgrade head` from `backend` and verify `0005 (head)` before starting the API. See [WORKFLOWS.md](WORKFLOWS.md) for the upgrade commands and numbering behaviour.
 
 ## Configure and test
 

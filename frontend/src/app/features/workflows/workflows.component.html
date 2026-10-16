@@ -51,6 +51,8 @@
             <petrix-set-variable-editor [config]="editVariable" [disabled]="!canManage || busy()" (configChange)="editVariable = $event" />
           } @else if (node.type === 'jump') {
             <petrix-jump-editor [config]="editJump" [targets]="jumpTargets()" [active]="jumpActive()" [disabled]="!canManage || busy()" (configChange)="editJump = $event" />
+          } @else if (node.type === 'ask_survey') {
+            <petrix-ask-survey-editor [config]="editSurvey" [disabled]="!canManage || busy()" (configChange)="editSurvey = $event" />
           } @else if (node.type === 'message_received') {
             <div class="field"><label for="intent-examples">Intent examples</label><textarea id="intent-examples" name="intentExamples" [(ngModel)]="examplesText" (ngModelChange)="updateExamples()" rows="7" placeholder="Check my balance&#10;What is my account balance?&#10;Show me my balance"></textarea><span class="field-note">One example per line, up to 30 per language. Add examples before enabling this trigger.</span></div>
             <div class="field"><label for="match-mode">Matching</label><select id="match-mode" name="matchMode" [(ngModel)]="matchMode"><option value="approximate">Layered intent matching</option><option value="exact">Exact phrase matching</option></select><span class="field-note">Layered matching tries fuzzy text, then semantic embeddings, then Groq when available. Close competing matches pass to the next stage. The agent’s LLM setting controls the Groq stage.</span></div>
@@ -61,7 +63,7 @@
           @else if (node.type === 'collect_feedback') { <p class="event-explainer">Runs after a closed chat receives a CSAT rating. Use the tester’s feedback event to try it.</p> }
           @else { <p class="event-explainer">This conversation trigger is permanent and always enabled. Configure what happens by adding actions below it.</p> }
         </fieldset></div>
-        <footer>@if (error()) { <div class="field-error" role="alert">{{ error() }}</div> }<div><button class="btn btn-secondary" type="button" (click)="closeEditor()" [disabled]="busy()">Cancel</button><button class="btn btn-primary" [disabled]="!canManage || busy() || !dirty() || !node.name.trim() || (node.type === 'jump' && !!jumpError())">@if (busy()) { <span class="spinner"></span> }Save</button></div></footer>
+        <footer>@if (error()) { <div class="field-error" role="alert">{{ error() }}</div> }<div><button class="btn btn-secondary" type="button" (click)="closeEditor()" [disabled]="busy()">Cancel</button><button class="btn btn-primary" [disabled]="!canManage || busy() || !dirty() || !node.name.trim() || (node.type === 'jump' && !!jumpError()) || (node.type === 'ask_survey' && !!surveyError())">@if (busy()) { <span class="spinner"></span> }Save</button></div></footer>
       </form>
     </aside>
   }
@@ -92,7 +94,7 @@
   @if (dialogType() === 'trigger') {
     <form (ngSubmit)="createTrigger()"><fieldset [disabled]="busy()"><div class="field"><label for="workflow-type">Workflow type</label><select id="workflow-type" name="createType" [(ngModel)]="createType">@for (trigger of availableTriggers(); track trigger.type) { <option [value]="trigger.type" [disabled]="trigger.type === 'fallback' && hasFallbackAtInsertion()">{{ trigger.name }}</option> }</select></div><div class="field"><label for="workflow-name">Name</label><input id="workflow-name" name="createName" [(ngModel)]="createName" required maxlength="100" placeholder="Enter name"></div><div class="field"><label for="workflow-description">Description <span class="optional">Optional</span></label><textarea id="workflow-description" name="createDescription" [(ngModel)]="createDescription" rows="3" maxlength="1000" placeholder="What should this workflow do?"></textarea></div><p class="field-note">Message triggers start disabled so you can configure their intent examples first.</p><div class="dialog-actions"><button class="btn btn-secondary" type="button" (click)="closeDialog()">Cancel</button><button class="btn btn-primary" [disabled]="!createName.trim() || (createType === 'fallback' && hasFallbackAtInsertion()) || busy()">Create</button></div></fieldset></form>
   } @else if (dialogType() === 'action') {
-    <p class="catalog-description">Choose what happens next. Send message, Set variable, and Jump are ready to configure; the other actions will follow in the next steps.</p>
+    <p class="catalog-description">Choose what happens next. Send message, Ask survey, Set variable, and Jump are ready to configure; the other actions will follow in the next steps.</p>
     @for (group of groups; track group) { <section class="action-group"><h3>{{ group }}</h3><div class="action-catalog">@for (action of groupedActions(group); track action.type) { <button [disabled]="!action.available" (click)="chooseAction(action)"><span class="type-icon action"><petrix-icon [name]="actionIcon(action.type)" /></span><span><strong>{{ action.name }}</strong><small>{{ action.description }}</small></span><em>{{ action.available ? 'Ready' : 'Later' }}</em></button> }</div></section> }
   }
 </dialog>

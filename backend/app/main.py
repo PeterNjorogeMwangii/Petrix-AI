@@ -25,7 +25,7 @@ def create_app(settings: Optional[Settings] = None, mailer=None) -> FastAPI:
         yield
         engine.dispose()
 
-    application = FastAPI(title="Petrix AI", version="0.4.1", description="AI agents, workflows, Jump redirects, session variables, and layered intent matching.", lifespan=lifespan)
+    application = FastAPI(title="Petrix AI", version="0.5.0", description="AI agents, workflows, surveys, Jump redirects, session variables, and layered intent matching.", lifespan=lifespan)
     application.state.settings = settings
     application.state.engine = engine
     application.state.session_factory = session_factory

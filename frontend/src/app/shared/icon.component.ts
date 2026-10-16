@@ -4,6 +4,7 @@ const paths: Record<string, string> = {
   spark: 'M12 3l2.3 6.7L21 12l-6.7 2.3L12 21l-2.3-6.7L3 12l6.7-2.3Z',
   variable: 'M8 3H6v6l-3 3 3 3v6h2M16 3h2v6l3 3-3 3v6h-2M10 12h4',
   jump: 'M4 19v-7a5 5 0 0 1 5-5h11M15 2l5 5-5 5',
+  survey: 'M5 3h14v18H5ZM8 7h1m3 0h4M8 12h1m3 0h4M8 17h1m3 0h4',
   search: 'M15.5 15.5 21 21M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',
   mail: 'M3 5h18v14H3ZM3 6l9 7 9-7',
   arrow: 'M5 12h14M13 6l6 6-6 6',

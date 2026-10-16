@@ -1,6 +1,18 @@
 # Petrix AI verification
 
-## Jump update — 16 October 2026, version 0.4.1
+## Ask survey — 16 October 2026, version 0.5.0
+
+The full backend suite passed: **367 tests, with no failures or skips**. The 59 new survey checks cover field validation, all six answer formats, normalization, invalid replies, skip, quick answers, exact continuation, consecutive surveys, Jump integration, lifecycle interruption, retained intent entities, tokens/replays, workflow revision changes, real file uploads/downloads, file limits, access isolation, rollback, and migration `0005` preserving existing workflow data. Previous authentication, agent, numbering, expression, matching, and Jump checks also pass.
+
+Checks ran on CPython 3.12.14 against temporary PGlite PostgreSQL instances through psycopg/SQLAlchemy, using real migrations, isolated schemas, actual authenticated endpoints, and stored file bytes. All 88 Python sources (including migrations and tests) parse using Python 3.9 syntax. Exact CPython 3.9.12 and Windows execution were not repeated for this release. No new runtime dependency is introduced.
+
+The Angular production build passed strict TypeScript/template compilation and bundle/style budgets. Initial assets total approximately 291 kB raw, and the dashboard lazy chunk is approximately 208 kB raw.
+
+Chromium tests used the built frontend and real authenticated API. They checked expanding/editing fields, adding/deleting a field, the 13-quick-answer limit, saving/reopening configuration, saving from the 390 px mobile editor, sequential text/email/number/phone answers, invalid-email retry, skipping, two consecutive single-file questions, a multiple-file answer, clearing each picker, downloading the original stored bytes, typed variables, and continuing through a Jump back to the menu. No browser JavaScript errors were observed. Desktop/mobile editor and conversation/upload screenshots were inspected.
+
+Apply migration **0005** before using file questions. It adds `agent_attachments`; it does not reset accounts, workflows, permanent step numbers, conversations, or previously saved variables. Provider calls and channel-specific Messenger buttons were not part of these survey checks; survey answers bypass intent classification and generative replies.
+
+## Previous Jump update — 16 October 2026, version 0.4.1
 
 The Jump update passed the complete backend suite: **308 tests passed, no skips or failures**. This includes 27 Jump cases covering UUID configuration, forward references, action and trigger destinations, sibling/ancestor continuations, nested waits, repeated menu visits after new input, chained jumps, variables, disabled steps, missing/foreign/self targets, stable numbers, deletion checks, API persistence, and rollback of looping turns.
 

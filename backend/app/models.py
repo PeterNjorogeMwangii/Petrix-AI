@@ -200,3 +200,15 @@ class WorkflowDocument(Base):
     next_node_number: Mapped[int] = mapped_column(Integer, default=1)
     nodes: Mapped[list] = mapped_column(JSON, default=list)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AgentAttachment(Base):
+    __tablename__ = "agent_attachments"
+    __table_args__ = (CheckConstraint("size_bytes > 0 AND size_bytes <= 10485760", name="ck_agent_attachment_size"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("agent_conversations.id", ondelete="CASCADE"), index=True)
+    file_name: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(120))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

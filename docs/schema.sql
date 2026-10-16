@@ -1,4 +1,4 @@
--- Petrix AI reference schema, Milestone 3. Use Alembic to apply schema changes and seed defaults.
+-- Petrix AI reference schema, version 0.5.0. Use Alembic to apply schema changes and seed defaults.
 
 CREATE TABLE auth_rate_limits (
 	key VARCHAR(64) NOT NULL, 
@@ -227,11 +227,13 @@ CREATE INDEX ix_agent_versions_agent_id ON agent_versions (agent_id);
 
 CREATE TABLE agent_workflows (
 	agent_id UUID NOT NULL, 
-	revision INTEGER NOT NULL, 
+	revision INTEGER NOT NULL,
+	next_node_number INTEGER NOT NULL, 
 	nodes JSON NOT NULL, 
 	updated_at TIMESTAMP WITH TIME ZONE NOT NULL, 
 	PRIMARY KEY (agent_id), 
-	CONSTRAINT ck_workflow_revision CHECK (revision >= 1), 
+	CONSTRAINT ck_workflow_revision CHECK (revision >= 1),
+	CONSTRAINT ck_workflow_next_node_number CHECK (next_node_number >= 1), 
 	FOREIGN KEY(agent_id) REFERENCES ai_agents (id) ON DELETE CASCADE
 );
 
@@ -247,3 +249,14 @@ CREATE TABLE agent_messages (
 );
 
 CREATE INDEX ix_agent_messages_conversation_id ON agent_messages (conversation_id);
+
+CREATE TABLE agent_attachments (
+ id UUID PRIMARY KEY,
+ conversation_id UUID NOT NULL REFERENCES agent_conversations(id) ON DELETE CASCADE,
+ file_name VARCHAR(255) NOT NULL,
+ content_type VARCHAR(120) NOT NULL,
+ size_bytes INTEGER NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 10485760),
+ data BYTEA NOT NULL,
+ created_at TIMESTAMP WITH TIME ZONE NOT NULL
+);
+CREATE INDEX ix_agent_attachments_conversation_id ON agent_attachments(conversation_id);

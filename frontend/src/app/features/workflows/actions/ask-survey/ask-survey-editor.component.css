@@ -1,0 +1,28 @@
+:host { display:block; }
+fieldset { border:0; padding:0; margin:0; min-width:0; }
+.survey-intro { color:var(--muted); font-size:11px; line-height:1.8; margin:0 0 18px; }
+.survey-field { border:1px solid #3c3c43; border-radius:8px; margin:0 0 13px; overflow:hidden; background:#151517; }
+.survey-field header { display:flex; align-items:center; gap:8px; padding:13px 11px; }
+.field-toggle { display:flex; gap:9px; align-items:center; flex:1; min-width:0; background:transparent; border:0; color:var(--text); text-align:left; padding:3px; font-size:12px; font-weight:550; }
+.field-toggle petrix-icon { width:13px; height:13px; transition:transform .15s; }
+.field-toggle petrix-icon.expanded { transform:rotate(180deg); }
+.field-toggle small { display:block; font-size:9px; line-height:1.5; font-weight:400; color:var(--muted); margin-top:4px; overflow-wrap:anywhere; }
+.delete-field, .quick-answer-row button { display:flex; padding:5px; border:0; color:#e59c8b; background:transparent; flex-shrink:0; }
+.delete-field petrix-icon { width:16px; height:16px; }
+.field-content { padding:18px 15px; border-top:1px solid #333339; }
+.skip-toggle { display:flex; align-items:center; gap:9px; font-size:12px; margin-bottom:23px; }
+input[type=checkbox] { accent-color:var(--accent); }
+.field-content textarea { resize:vertical; min-height:76px; font-size:12px; line-height:1.7; }
+.field-content input, .field-content select { font-size:12px; }
+.quick-answer-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.quick-answer-heading label { font-size:12px; }
+.quick-answer-heading > span { font-size:10px; color:var(--muted); }
+.quick-answer-row { display:flex; align-items:center; gap:6px; margin:9px 0; }
+.quick-answer-row input { min-width:0; width:100%; padding:11px 12px; background:#141416; border:1px solid #3b3b43; border-radius:6px; color:var(--text); }
+.quick-answer-row petrix-icon { width:14px; height:14px; }
+.add-survey-item { display:inline-flex; align-items:center; gap:7px; background:transparent; border:0; color:#bcb6ad; padding:8px 0; font-size:11px; }
+.add-survey-item petrix-icon { width:13px; height:13px; }
+.add-survey-item:hover:not(:disabled) { color:var(--accent); }
+.add-survey-item:disabled { opacity:.4; }
+.add-field { margin:5px 0 15px; }
+.optional { color:var(--muted); font-size:10px; font-weight:400; margin-left:4px; }
