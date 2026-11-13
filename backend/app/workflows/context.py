@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from app.workflows.chat_script import FUNCTIONS, ScriptError, json_value
 
-READ_ONLY = {"agent_id", "agent_name", "default_language", "conversation_id", "message", "feedback_rating", "attachment_name", "attachment_type", "system", "variables"}
+READ_ONLY = {"agent_id", "agent_name", "default_language", "conversation_id", "message", "attachment_name", "attachment_type", "system", "variables"}
 NAME_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}\Z", re.ASCII)
 
 
@@ -24,6 +24,14 @@ class ActionContext:
     language: str
     event: dict
     state: dict
+    api_client: object = None
+    api_calls: int = 0
+    sql_client: object = None
+    sql_calls: int = 0
+    attachment_store: object = None
+    attachment_calls: int = 0
+    carousel_calls: int = 0
+    llm_client: object = None
 
     @property
     def variables(self):
@@ -34,12 +42,12 @@ class ActionContext:
         return {"agent_id": str(self.agent.id), "agent_name": self.agent.name,
             "default_language": self.agent.default_language, "language": self.language,
             "conversation_id": str(self.event.get("conversation_id") or ""), "message": self.event.get("content") or "",
-            "feedback_rating": self.event.get("rating"), "attachment_name": attachment.get("name", ""),
+            "feedback_rating": self.event.get("rating") if self.event.get("rating") is not None else self.state.get("csat_rating"), "attachment_name": attachment.get("name", ""),
             "attachment_type": attachment.get("media_type", "")}
 
     def environment(self):
         system = self.system_values()
-        return {**self.variables, **system, "system": {**system, "intent": self.state.get("intent", {})}, "variables": self.variables}
+        return {**system, **self.variables, "system": {**system, "intent": self.state.get("intent", {})}, "variables": self.variables}
 
     def assign(self, name, value):
         validate_variable_name(name)

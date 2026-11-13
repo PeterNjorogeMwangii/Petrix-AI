@@ -1,0 +1,20 @@
+:host { display:block; }
+fieldset { border:0; padding:0; margin:0; min-width:0; }
+.headers-section { margin:24px 0; }
+h4 { display:flex; align-items:center; gap:9px; font-size:12px; font-weight:500; margin:0 0 12px; }
+.header-row { display:grid; grid-template-columns:minmax(0,.85fr) minmax(0,1.15fr) 24px; align-items:center; gap:7px; margin-bottom:9px; }
+.header-row input { width:100%; min-width:0; font-family:inherit; font-size:11px; padding:10px; background:#111113; border:1px solid #3c3c43; border-radius:7px; color:var(--text); outline:none; }
+.header-row input:focus { border-color:var(--accent); box-shadow:0 0 0 2px #ff8b4512; }
+.header-row input::placeholder { color:#72727d; }
+.header-value { position:relative; min-width:0; }.header-value input { padding-right:28px; }
+.header-value button { position:absolute; right:4px; top:50%; transform:translateY(-50%); padding:3px; }
+.header-row button { display:inline-flex; align-items:center; justify-content:center; background:transparent; border:0; color:#8e8b95; }
+.header-row button:hover:not(:disabled) { color:var(--accent); }.header-row .remove-header:hover:not(:disabled) { color:#e39c9c; }
+.header-row petrix-icon { width:13px; height:13px; }
+.add-header { display:inline-flex; align-items:center; gap:7px; background:transparent; border:0; padding:7px 0 10px; color:#c7b39f; font-size:11px; }.add-header petrix-icon { width:13px; height:13px; }.add-header:disabled { opacity:.4; }
+.field-note { line-height:1.8; }code { color:#dab89b; font-family:'Consolas','SFMono-Regular',monospace; font-size:10px; overflow-wrap:anywhere; }
+.payload-field select { margin-bottom:10px; }textarea { font-family:'Consolas','SFMono-Regular',monospace; font-size:11px; line-height:1.8; resize:vertical; min-height:150px; }
+.payload-footer { display:flex; justify-content:space-between; gap:10px; color:#85858e; font-size:9px; margin:7px 0; }
+.request-options,.response-help { color:var(--muted); font-size:11px; line-height:1.8; margin:20px 0; }summary { cursor:pointer; color:#bbb4ad; }.request-options .field { margin:14px 0; }
+.outcome-note { display:flex; gap:10px; border:1px solid #3e443f; border-radius:7px; background:#b8e8ce05; padding:12px; color:#aab9ad; }.outcome-note petrix-icon { width:16px; height:16px; margin-top:3px; }.outcome-note p { font-size:11px; line-height:1.8; margin:0; }.outcome-note strong { font-weight:500; }
+.response-help p { margin:12px 0 0; }.field-error { font-size:11px; line-height:1.7; }

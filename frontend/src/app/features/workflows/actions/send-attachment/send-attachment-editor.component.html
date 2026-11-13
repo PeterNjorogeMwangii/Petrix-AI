@@ -1,0 +1,30 @@
+<fieldset [disabled]="disabled || uploading()">
+  @if (!hasTranslation) { <p class="translation-note">No attachment is configured for this language. Add one here; the default attachment is used until you save.</p> }
+  <div class="field"><label for="attachment-format">File format</label><select id="attachment-format" [ngModelOptions]="{standalone:true}" [ngModel]="translation.file_format" (ngModelChange)="changeFormat($event)">@for (format of formats; track format.value) { <option [value]="format.value">{{ format.label }}</option> }</select></div>
+  <div class="source-field"><span id="attachment-source-label" class="source-label">Source</span><div class="sources" role="radiogroup" aria-labelledby="attachment-source-label">
+    <label><input type="radio" name="attachmentSource" [ngModelOptions]="{standalone:true}" [ngModel]="translation.source" value="upload" (ngModelChange)="changeSource($event)">Upload file</label>
+    <label><input type="radio" name="attachmentSource" [ngModelOptions]="{standalone:true}" [ngModel]="translation.source" value="link" (ngModelChange)="changeSource($event)">File link</label>
+    <label><input type="radio" name="attachmentSource" [ngModelOptions]="{standalone:true}" [ngModel]="translation.source" value="script" (ngModelChange)="changeSource($event)">Chat script</label>
+  </div></div>
+  @if (translation.source === 'upload') {
+    <input #fileInput id="attachment-upload" type="file" class="sr-only" [accept]="accept()" (change)="select($event)" aria-label="Choose attachment file">
+    @if (file(); as uploaded) {
+      <petrix-attachment-preview [file]="uploaded" />
+      <div class="file-actions"><button type="button" (click)="fileInput.click()">Replace file</button><button type="button" (click)="remove()">Remove file</button></div>
+    } @else {
+      <div class="dropzone" [class.dragging]="dragging" [attr.aria-busy]="uploading() || loading()" (dragover)="dragOver($event)" (dragleave)="dragging = false" (drop)="drop($event)">
+        <span class="upload-icon"><petrix-icon name="upload" /></span>
+        @if (uploading()) { <strong>Uploading file…</strong><span class="spinner"></span> }
+        @else if (loading()) { <strong>Loading attachment…</strong> }
+        @else { <strong>Drag and drop file here to upload</strong><span>or <button type="button" (click)="fileInput.click()">browse files</button></span> }
+        <small>Supported file types: {{ extensions() }}</small><small>Maximum file size: 20 MiB</small>
+      </div>
+    }
+  } @else if (translation.source === 'link') {
+    <div class="field"><label for="attachment-url">File URL</label><input id="attachment-url" type="url" [ngModelOptions]="{standalone:true}" [(ngModel)]="translation.url" (ngModelChange)="update()" maxlength="2048" placeholder="https://example.com/complaint-form.pdf"><span class="field-note">Use a direct HTTP or HTTPS link to a hosted file.</span></div>
+  } @else {
+    <div class="field"><label for="attachment-script">Chat script</label><textarea id="attachment-script" class="code-input" [ngModelOptions]="{standalone:true}" [(ngModel)]="translation.chat_script" (ngModelChange)="update()" rows="5" maxlength="2000" placeholder="'https://example.com/complaint-form.pdf'"></textarea><span class="field-note">Enter a Python expression that returns a file URL, such as <code>file_url</code> or <code>uploaded_form.url</code> from an attachment survey answer.</span></div>
+  }
+  @if (error()) { <div class="field-error" role="alert">{{ error() }}</div> }
+  <p class="localisation-note">Provide the appropriate file for each language. Switching language does not translate a file.</p>
+</fieldset>

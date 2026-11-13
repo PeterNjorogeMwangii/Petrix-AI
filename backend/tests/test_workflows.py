@@ -51,8 +51,8 @@ def test_defaults_are_saved_once_and_catalogue_is_explicit(client, workflow, app
     path, document, csrf = workflow
     assert [root["type"] for root in document["nodes"]] == ["chat_started", "chat_closed", "chat_timeout", "ai_timeout", "fallback"]
     assert document["revision"] == 1
-    assert len(document["actions"]) == 19
-    assert [item["type"] for item in document["actions"] if item["available"]] == ["send_message", "ask_survey", "jump", "set_variable"]
+    assert len(document["actions"]) == 20
+    assert [item["type"] for item in document["actions"] if item["available"]] == ["send_message", "send_attachment", "show_carousel", "ask_survey", "collect_feedback", "jump", "branch", "set_variable", "switch_language", "close_chat", "send_api", "llm_processing", "sql_query"]
     greeting = document["nodes"][0]["children"][0]
     assert "{_chatbot.name}" in greeting["config"]["translations"]["en"]["messages"][0]
     assert contents(event(client, path, csrf)) == ["Hi! I’m Default AI Agent. How can I assist you today?"]
@@ -213,15 +213,17 @@ def test_attachment_events_filter_types_and_persist_metadata(client, workflow, a
 
 def test_close_and_csat_events_follow_the_conversation_lifecycle(client, workflow, app):
     path, document, csrf = workflow
-    document["nodes"][1]["children"] = [message("Chat ended")]
+    document["nodes"][1]["children"] = [node("action", "collect_feedback", config={"rating_enabled": True,
+        "translations": {"en": {"webchat_rating_title": "Please rate the conversation"}}})]
     document["nodes"].append(node("trigger", "collect_feedback", children=[message("Thank you for {{feedback.rating}} / 5")]))
     assert save(client, path, document, csrf).status_code == 200
     conversation = event(client, path, csrf).json()["conversation_id"]
     assert event(client, path, csrf, "collect_feedback", conversation, rating=5).status_code == 409
     closed = event(client, path, csrf, "chat_closed", conversation)
-    assert contents(closed) == ["Chat ended"] and closed.json()["closed"]
+    assert contents(closed) == [] and closed.json()["closed"]
+    token = closed.json()["feedback"]["token"]
     assert event(client, path, csrf, "message_received", conversation, content="Hi").status_code == 409
-    feedback = event(client, path, csrf, "collect_feedback", conversation, rating=5)
+    feedback = event(client, path, csrf, "collect_feedback", conversation, rating=5, feedback_token=token)
     assert contents(feedback) == ["Thank you for 5 / 5"]
     assert event(client, path, csrf, "collect_feedback", conversation, rating=4).status_code == 409
     with app.state.session_factory() as db:
@@ -243,7 +245,7 @@ def test_saved_workflow_changes_invalidate_a_waiting_context(client, workflow):
 class FakeLLM:
     available = True
     def __init__(self): self.calls = []; self.fail = False
-    def reply(self, agent, history):
+    def reply(self, agent, history, language=None):
         self.calls.append(history)
         if self.fail: raise HTTPException(503, "Provider unavailable")
         return "Generated answer"

@@ -1,10 +1,18 @@
-"""Bounded workflow interpreter. Action handlers are pure, individually packaged functions."""
+"""Bounded workflow interpreter with explicit handlers and injectable API calls."""
 from copy import deepcopy
+import uuid
 
 from fastapi import HTTPException
 from app.workflows.actions.ask_survey import handler as survey
+from app.workflows.actions.branch.handler import BranchSelect
+from app.workflows.actions.send_api.handler import APIOutcome
+from app.workflows.actions.sql_query.handler import QueryOutcome
 from app.workflows.actions.jump.handler import JumpTo
-from app.workflows.actions.registry import handler_for
+from app.workflows.actions.collect_feedback.handler import FeedbackRequest
+from app.workflows.actions.close_chat.handler import CloseChat
+from app.workflows.actions.llm_processing.handler import LLMOutcome
+from app.workflows.post_close import POST_CLOSE_ACTIONS, PostCloseFlow
+from app.workflows.actions.registry import ACTIONS, handler_for
 from app.workflows.chat_script import ScriptError
 from app.workflows.context import ActionContext
 from app.workflows.matching.fuzzy import normalize, similarity
@@ -35,10 +43,10 @@ def choose_trigger(nodes, event, agent, language):
         if score > best_score:
             best, best_score = node, score
     # Permanent system events have their own top-level triggers, never a fallback.
-    return best or (fallback if event["event"] in {"message_received", "attachment_received", "collect_feedback"} else None)
+    return best or (fallback if event["event"] in {"message_received", "attachment_received"} else None)
 
 
-def execute(document, agent, state, event, matching=None):
+def execute(document, agent, state, event, matching=None, api_client=None, sql_client=None, attachment_store=None, continuation=None, llm_client=None):
     index, entries, enabled = {}, {}, {}
 
     def collect(nodes, continuation=None, ancestors_enabled=True):
@@ -57,16 +65,26 @@ def execute(document, agent, state, event, matching=None):
                 entries[node["id"]] = continuation + [[sibling["id"] for sibling in nodes[position:]]]
                 child_continuation = continuation + [[sibling["id"] for sibling in nodes[position + 1:]]]
             collect(node["children"], child_continuation, enabled[node["id"]])
+            for path in node.get("paths", []):
+                collect(path["children"], child_continuation, enabled[node["id"]])
 
     collect(document.nodes)
     state = deepcopy(state)
+    resuming_feedback = continuation is not None
+    closing = event["event"] == "chat_closed" or resuming_feedback
+    close_graph = PostCloseFlow(document.nodes)
+    if closing:
+        state["closed"] = True
+        root = next((value for value in document.nodes if value["type"] == "chat_closed"), None)
+        issue = close_graph.issue(root["id"]) if root else "The permanent Chat Closed trigger is missing."
+        if issue: raise HTTPException(422, issue)
     language = event.get("language") or state.get("language") or agent.default_language
     if language not in agent.languages:
         language = agent.default_language
     state["language"] = language
-    context = ActionContext(agent=agent, language=language, event=event, state=state)
+    context = ActionContext(agent=agent, language=language, event=event, state=state, api_client=api_client, sql_client=sql_client, attachment_store=attachment_store, llm_client=llm_client)
     same_revision = state.get("workflow_revision") == document.revision
-    stack = [list(frame) for frame in state.get("stack", [])] if same_revision else []
+    stack = deepcopy(continuation) if resuming_feedback else [list(frame) for frame in state.get("stack", [])] if same_revision else []
     trace, output = [], []
     trigger = None
     blocked = False
@@ -79,12 +97,12 @@ def execute(document, agent, state, event, matching=None):
     def choose(nodes, scope):
         nonlocal blocked
         if matching is None:
-            return choose_trigger(nodes, event, agent, language)
-        decision = matching.choose(nodes, event, language, scope)
+            return choose_trigger(nodes, event, agent, context.language)
+        decision = matching.choose(nodes, event, context.language, scope)
         blocked = decision.needs_clarification
         return decision.node
 
-    system_event = event["event"] in {"chat_started", "chat_closed", "chat_timeout", "ai_timeout"}
+    system_event = closing or event["event"] in {"chat_started", "chat_timeout", "ai_timeout"}
     if not same_revision or system_event:
         state.pop("survey", None)
     if state.get("survey"):
@@ -114,11 +132,11 @@ def execute(document, agent, state, event, matching=None):
         trigger = choose([index[key] for key in stack[-1] if key in index], "nested")
         if trigger:
             stack.pop()
-    if not survey_resumed and not trigger and not blocked:
+    if not resuming_feedback and not survey_resumed and not trigger and not blocked:
         trigger = choose(document.nodes, "root")
         if trigger:
             stack = []
-    if matching is not None and not survey_resumed:
+    if matching is not None and not survey_resumed and not resuming_feedback:
         state["intent"] = matching.report
     if blocked:
         output.append({"content": matching.last.clarification_question, "quick_replies": [], "source": "clarification", "node_id": None})
@@ -126,7 +144,7 @@ def execute(document, agent, state, event, matching=None):
     if trigger:
         trace.append({"node_id": trigger["id"], "node_number": trigger["number"], "name": trigger["name"], "type": trigger["type"], "outcome": "matched"})
         stack.append([node["id"] for node in trigger["children"]])
-    if trigger or survey_resumed:
+    if trigger or survey_resumed or resuming_feedback:
         steps = 0
         jumps = set()
         while stack:
@@ -141,10 +159,53 @@ def execute(document, agent, state, event, matching=None):
                 stack[-1].pop(0)
                 continue
             if node["kind"] == "trigger":
+                if closing: raise HTTPException(422, "Chat Closed automation cannot wait for an incoming trigger.")
                 break
             stack[-1].pop(0)
             try:
+                if closing and node["type"] not in POST_CLOSE_ACTIONS:
+                    raise ScriptError("This action is not available after chat closure.")
+                if not closing and close_graph.owner.get(node["id"]) == "chat_closed":
+                    raise ScriptError("Chat Closed steps only run during chat closure automation.")
+                if node["type"] not in ACTIONS or not ACTIONS[node["type"]]["available"]:
+                    raise ScriptError("This action is not ready to execute yet.")
+                previous_language = context.language
                 result = handler_for(node["type"])(node["config"], context)
+                if isinstance(result, CloseChat):
+                    already_closed = bool(state.get("closed"))
+                    trace.append({"node_id": node["id"], "node_number": node["number"], "name": node["name"],
+                        "type": "close_chat", "outcome": "already_closed" if already_closed else "closed"})
+                    if already_closed:
+                        stack.append([child["id"] for child in node["children"]])
+                        continue
+                    state["closed"] = True
+                    state["close_requested"] = {"node_id": node["id"], "node_number": node["number"]}
+                    state.pop("survey", None); stack = []
+                    return finish(True)
+                if isinstance(result, FeedbackRequest):
+                    stack.append([child["id"] for child in node["children"]])
+                    context.state["feedback_request"] = {**result.payload, "token": str(uuid.uuid4()),
+                        "node_id": node["id"], "node_number": node["number"], "language": context.language,
+                        "workflow_revision": document.revision, "continuation": deepcopy(stack)}
+                    trace.append({"node_id": node["id"], "node_number": node["number"], "name": node["name"], "type": "collect_feedback", "outcome": "rating_requested" if result.payload["rating_enabled"] else "survey_requested"})
+                    stack = []
+                    return finish(True)
+                if isinstance(result, (BranchSelect, APIOutcome, QueryOutcome, LLMOutcome)):
+                    path = next((path for path in node.get("paths", []) if path["id"] == result.path_id), None)
+                    if path is None:
+                        raise ScriptError("The selected action path is missing. Save the action settings again.")
+                    if isinstance(result, BranchSelect):
+                        detail = {"outcome": "branched", "condition_name": result.condition_name}
+                    elif isinstance(result, LLMOutcome):
+                        detail = {"outcome": result.outcome, "error": result.error, "model": result.model, "knowledge_sources": result.knowledge_sources}
+                    elif isinstance(result, QueryOutcome):
+                        detail = {"outcome": result.outcome, "row_count": result.row_count, "error": result.error}
+                    else:
+                        detail = {"outcome": result.outcome, "status_code": result.status_code, "error": result.error}
+                    trace.append({"node_id": node["id"], "node_number": node["number"], "name": node["name"],
+                        "type": node["type"], "path_id": result.path_id, **detail})
+                    stack.append([child["id"] for child in path["children"]])
+                    continue
                 if isinstance(result, survey.SurveyWait):
                     output.append(survey.question(node, context))
                     trace.append({"node_id": node["id"], "node_number": node["number"], "name": node["name"],
@@ -153,6 +214,8 @@ def execute(document, agent, state, event, matching=None):
                     break
                 if isinstance(result, JumpTo):
                     target = index.get(result.target_node_id)
+                    if target and not closing and close_graph.owner.get(target["id"]) == "chat_closed":
+                        raise ScriptError("Only Chat Closed automation can enter its steps.")
                     if not target or not enabled.get(result.target_node_id):
                         raise ScriptError("The Jump target is missing or disabled. Choose an enabled step in this agent's workflow.")
                     if node["id"] in jumps:
@@ -169,6 +232,7 @@ def execute(document, agent, state, event, matching=None):
                 raise HTTPException(422, "Step '{}': {}".format(node["name"], error)) from None
             if result is not None:
                 output.append({**result, "node_id": node["id"], "source": node["type"]})
-            trace.append({"node_id": node["id"], "node_number": node["number"], "name": node["name"], "type": node["type"], "outcome": "executed"})
+            detail = {"previous_language": previous_language, "target_language": context.language} if node["type"] == "switch_language" else {}
+            trace.append({"node_id": node["id"], "node_number": node["number"], "name": node["name"], "type": node["type"], "outcome": "executed", **detail})
             stack.append([child["id"] for child in node["children"]])
-    return finish(trigger is not None or survey_resumed or blocked)
+    return finish(trigger is not None or survey_resumed or resuming_feedback or blocked)

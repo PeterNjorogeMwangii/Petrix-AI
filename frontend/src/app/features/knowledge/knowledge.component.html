@@ -1,0 +1,22 @@
+<section class="knowledge-panel" aria-labelledby="knowledge-title">
+  <header><div><span class="eyebrow">AGENT KNOWLEDGE</span><h2 id="knowledge-title">Give your agent context</h2><p>Add text your LLM Processing actions can use, such as service details, policies, or answers to common questions.</p></div><button class="tool-button" type="button" aria-label="Reload knowledge" [disabled]="loading() || busy()" (click)="load()"><petrix-icon name="refresh" /></button></header>
+  @if (loading()) { <p class="state" role="status"><span class="spinner"></span>Loading knowledge…</p> }
+  @else {
+    @if (error()) { <p class="alert alert-error" role="alert">{{ error() }}</p> }
+    @if (success()) { <p class="alert alert-success" role="status">{{ success() }}</p> }
+    @if (document(); as data) {
+      <div class="knowledge-status"><span>Revision {{ data.revision }} · {{ sources.length }} / 20 sources</span><span [class.limit]="bytes() > 65536">{{ (bytes() / 1024).toFixed(1) }} / 64 KB</span></div>
+      <form (ngSubmit)="save()"><fieldset [disabled]="!canManage || busy()">
+        @for (source of sources; track source.id; let index = $index) {
+          <article class="source-card"><div class="source-heading"><span>Text source {{ index + 1 }}</span><div><label class="enabled"><input type="checkbox" [(ngModel)]="source.enabled" [name]="'enabled-' + source.id">Enabled</label><button type="button" class="remove" [attr.aria-label]="'Delete source ' + (index + 1)" (click)="remove(source.id)"><petrix-icon name="trash" /></button></div></div>
+            <div class="field"><label [for]="'title-' + source.id">Title</label><input [id]="'title-' + source.id" [(ngModel)]="source.name" [name]="'title-' + source.id" maxlength="100" placeholder="For example, complaints policy" required></div>
+            <div class="field"><label [for]="'content-' + source.id">Knowledge text</label><textarea [id]="'content-' + source.id" [(ngModel)]="source.content" [name]="'content-' + source.id" maxlength="20000" rows="7" placeholder="Enter the information this agent should use…" required></textarea><span class="field-note">{{ source.content.length.toLocaleString() }} / 20,000 characters</span></div>
+          </article>
+        } @empty { <div class="empty-state"><petrix-icon name="book" /><h3>No knowledge sources yet</h3><p>Add a text source, then enable “Use Knowledge info” in an LLM Processing action.</p></div> }
+        <button class="btn btn-secondary" type="button" [disabled]="!canManage || busy() || sources.length >= 20" (click)="add()"><petrix-icon name="plus" />Add text source</button>
+        @if (dirty() && validationError()) { <p class="field-error" role="status">{{ validationError() }}</p> }
+        <footer><span class="field-note">Enabled sources are included when an action requests knowledge.</span><div>@if (dirty()) { <span class="draft-label">Unsaved changes</span><button class="btn btn-secondary" type="button" (click)="canDiscard()">Cancel</button> }<button class="btn btn-primary" [disabled]="!canManage || busy() || !dirty() || !!validationError()">@if (busy()) { <span class="spinner"></span> }Save knowledge</button></div></footer>
+      </fieldset></form>
+    } @else { <button class="btn btn-secondary" type="button" (click)="load()">Try again</button> }
+  }
+</section>

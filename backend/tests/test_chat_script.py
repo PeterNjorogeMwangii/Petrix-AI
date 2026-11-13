@@ -83,6 +83,29 @@ def test_short_circuit_and_optional_variables():
     assert evaluate('len(variables.get("c"))', {"variables": variables}) == 8000
 
 
+@pytest.mark.parametrize('script,expected', [
+    ('status.text == "resolved"', True), ('status.text.lower()', 'resolved'),
+    ('score.norm.value >= 5', True), ('score + 2', 7),
+    ('api.customer.status', 'active'), ('variables.score.norm.value', 5),
+    ('{"text":"explicit"}.text', 'explicit'), ('nullable is not None and nullable.text == "yes"', False)])
+def test_survey_views_and_public_json_fields(script, expected):
+    values = {'status': 'resolved', 'score': 5, 'nullable': None, 'api': {'customer': {'status': 'active'}}}
+    assert evaluate(script, {**values, 'variables': values}) == expected
+
+
+@pytest.mark.parametrize('script', ['status.__dict__', 'status.text.__class__', 'score.norm.__class__',
+    'api.customer._private', 'api.customer.clear()', 'status.text.format("x")'])
+def test_dotted_fields_never_expose_python_attributes_or_extra_methods(script):
+    with pytest.raises(ScriptError): parse_expression(script)
+
+
+@pytest.mark.parametrize('script', ['status.missing', 'score.text', 'status.norm.value', 'nullable.text', 'flag.norm.value',
+    'api.customer.missing', 'status.lower', 'score.real'])
+def test_invalid_dotted_views_fail_with_controlled_errors(script):
+    with pytest.raises(ScriptError):
+        evaluate(script, {'status': 'secret', 'score': 5, 'nullable': None, 'flag': True, 'api': {'customer': {}}})
+
+
 def test_expressions_and_values_are_bounded():
     with pytest.raises(ScriptError): parse_expression('"' + 'a' * 2000 + '"')
     with pytest.raises(ScriptError): parse_expression('+'.join(['1'] * 100))

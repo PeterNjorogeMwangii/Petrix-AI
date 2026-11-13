@@ -7,23 +7,27 @@ from app.workflows.chat_script import ScriptError
 TOKEN = re.compile(r"\{\{\s*([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*|_chatbot\.name)\s*\}\}|\{([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*|_chatbot\.name)\}")
 
 
-def render(source, context, maximum=4000):
+def resolve(path, context):
     environment = context.environment()
     aliases = {"_chatbot.name": context.agent.name, "agent.name": context.agent.name,
         "input.message": context.event.get("content") or "", "feedback.rating": context.event.get("rating")}
 
-    def resolve(path):
-        if path in aliases:
-            return aliases[path]
-        parts = path.split(".")
-        if parts[0] not in environment:
-            raise ScriptError("Variable '{}' is not set.".format(parts[0]))
-        value = environment[parts[0]]
-        for key in parts[1:]:
-            if type(value) is dict and key in value: value = value[key]
-            elif type(value) is list and key.isdigit() and int(key) < len(value): value = value[int(key)]
-            else: raise ScriptError("Variable path '{}' is not available.".format(path))
-        return value
+    if path in aliases:
+        return aliases[path]
+    parts = path.split(".")
+    if parts[0] not in environment:
+        raise ScriptError("Variable '{}' is not set.".format(parts[0]))
+    value = environment[parts[0]]
+    for key in parts[1:]:
+        if type(value) is dict and key in value: value = value[key]
+        elif type(value) is list and key.isdigit() and int(key) < len(value): value = value[int(key)]
+        elif type(value) is str and key == "text": value = value
+        elif type(value) in {int, float} and key == "norm": value = {"value": value}
+        else: raise ScriptError("Variable path '{}' is not available.".format(path))
+    return value
+
+
+def render(source, context, maximum=4000):
 
     def text(value):
         if value is None: return ""
@@ -33,7 +37,7 @@ def render(source, context, maximum=4000):
     chunks, position, size = [], 0, 0
     for match in TOKEN.finditer(source):
         literal = source[position:match.start()]
-        replacement = text(resolve(match.group(1) or match.group(2)))
+        replacement = text(resolve(match.group(1) or match.group(2), context))
         size += len(literal) + len(replacement)
         if size > maximum: raise ScriptError("The rendered message or quick reply is too long.")
         chunks.extend([literal, replacement]); position = match.end()

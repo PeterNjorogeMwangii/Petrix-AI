@@ -8,17 +8,17 @@
         <button type="button" class="nav-item" [class.active]="!settingsMode && item.label === 'AI agents'" [attr.aria-current]="!settingsMode && item.label === 'AI agents' ? 'page' : null" (click)="item.label === 'AI agents' ? openAgents() : futureFeature(item.label)"><petrix-icon [name]="item.icon" /><span>{{ item.label }}</span>@if (!settingsMode && item.label === 'AI agents') { <span class="nav-active-dot"></span> }</button>
       }
       <div class="nav-divider"></div>
-      <button class="nav-item" [class.active]="settingsMode" (click)="openSettings()" [disabled]="!api.context()?.workspace?.permissions?.manage_workspace_roles" [attr.aria-current]="settingsMode ? 'page' : null"><petrix-icon name="settings" />Settings</button>
+      <button class="nav-item" [class.active]="settingsMode" (click)="openSettings()" [attr.aria-current]="settingsMode ? 'page' : null"><petrix-icon name="settings" />Settings</button>
     </nav>
     <div class="sidebar-bottom">
       <div class="plan-usage"><span>{{ usage().plan_name }} plan</span><span>{{ usage().count }} / {{ usage().agent_limit }} agents</span></div>
       <div class="workspace-row"><div class="workspace-tile">@if (api.context()?.workspace?.avatar_url) { <img [src]="api.context()?.workspace?.avatar_url" alt="Workspace avatar"> } @else { {{ initials }} }</div><div class="workspace-name"><strong>{{ api.context()?.workspace?.name }}</strong><span>Personal workspace</span></div><span class="owner-badge">{{ api.context()?.workspace?.role | titlecase }}</span></div>
-      <div class="user-row"><span class="user-avatar">{{ userInitial }}</span><div><strong>{{ api.context()?.user?.full_name || 'Your account' }}</strong><span>{{ api.context()?.user?.email }}</span></div><button class="icon-button" aria-label="Sign out" (click)="logout()" [disabled]="!!busy()"><petrix-icon name="logout" /></button></div>
+      <div class="user-row"><span class="user-avatar">{{ userInitial }}</span><div><strong>{{ api.context()?.user?.full_name || 'Your account' }}</strong><span>{{ api.context()?.user?.email }}</span></div><petrix-profile-menu (signOut)="logout()" /></div>
     </div>
   </aside>
   <section class="dashboard-main" [attr.aria-label]="settingsMode ? 'Workspace settings' : 'AI agents'">
     <header class="dashboard-header">
-      <div class="header-title"><button class="mobile-menu icon-button" aria-label="Open navigation" (click)="sidebarOpen.set(true)"><petrix-icon name="menu" /></button><h1>{{ settingsMode ? 'Workspace settings' : 'AI agents' }}</h1>
+      <div class="header-title"><button class="mobile-menu icon-button" aria-label="Open navigation" (click)="sidebarOpen.set(true)"><petrix-icon name="menu" /></button><h1>{{ settingsMode ? 'Settings' : 'AI agents' }}</h1>
         @if (!settingsMode) {
           <div class="agent-picker">
             <button class="agent-selector" (click)="dropdownOpen.set(!dropdownOpen())" [attr.aria-expanded]="dropdownOpen()" aria-controls="agent-dropdown" [disabled]="loading() || !!busy() || testerBusy()"><span class="agent-avatar small">@if (selected()?.avatar_url) { <img [src]="selected()?.avatar_url" alt=""> } @else { {{ initialsFor(selected()?.name || 'AI') }} }</span><span>{{ selected()?.name || 'Select an AI agent' }}</span><petrix-icon name="chevron" /></button>
@@ -45,7 +45,7 @@
       @if (info()) { <div class="notice success" role="status"><span>{{ info() }}</span><button class="icon-button" aria-label="Dismiss message" (click)="info.set('')"><petrix-icon name="close" /></button></div> }
       @if (loading()) { <div class="loading-state"><span class="spinner"></span>Loading your workspace…</div> }
       @else if (settingsMode) {
-        <div class="settings-breadcrumb">Settings <span>/</span> Workspace <span>/</span> Roles &amp; permissions</div>
+        <petrix-settings [section]="settingsSection">
         <section class="config-card roles-card"><div class="section-heading"><div><h2>Roles &amp; permissions</h2><p>Choose who can create, configure, import, and delete AI agents.</p></div><span class="section-icon"><petrix-icon name="lock" /></span></div>
           @if (roles()) {
             <form (ngSubmit)="saveRoles()"><div class="roles-table"><div class="role-table-head"><span>Workspace role</span><span>Manage AI Agents</span></div>
@@ -56,6 +56,7 @@
           }
         </section>
         <section class="config-card plan-card"><h2>Workspace plan</h2><div class="plan-summary"><span class="plan-label">{{ usage().plan_name }}</span><span>{{ usage().count }} of {{ usage().agent_limit }} agents</span><span>{{ usage().language_limit }} languages per agent</span></div><p class="field-note">Your workspace plan determines its agent and language capacity.</p></section>
+        </petrix-settings>
       }
       @else if (!selected()) {
         <section class="empty-state"><span class="empty-icon"><petrix-icon name="spark" /></span><div class="eyebrow">A new beginning</div><h2>Create your next AI agent</h2><p>Give it a name, choose a language, and make it your own.</p><button class="btn btn-primary" (click)="openModal('choose')" [disabled]="!canManage() || atCapacity()"><petrix-icon name="plus" />Create AI agent</button>@if (!canManage()) { <p class="field-note">Ask a workspace administrator for the Manage AI Agents permission.</p> }</section>
@@ -88,6 +89,9 @@
             </section>
             <section class="config-card danger-card" id="danger"><h2>Danger zone</h2><p>Permanently delete this AI agent, its configuration, versions, and network connections. This action cannot be undone.</p><p class="field-note">Historical chat logs are retained. Move its audience to another agent before deleting an agent used by published channels.</p><button type="button" class="btn btn-danger" (click)="openModal('delete')" [disabled]="!canManage() || !!busy()"><petrix-icon name="trash" />Delete AI agent</button></section>
           </div><nav class="section-nav" aria-label="Agent settings sections">@for (section of [{id:'personalization',name:'Personalization'},{id:'languages',name:'Languages'},{id:'identity',name:'Settings'},{id:'danger',name:'Danger zone'}]; track section.id) { <button [class.active]="activeSection === section.id" (click)="jump(section.id)">{{ section.name }}</button> }</nav></div>
+        }
+        @else if (activeTab() === 'Knowledge') {
+          <petrix-knowledge [agent]="agent" [canManage]="canManage()" (busyChange)="busy.set($event ? 'knowledge' : '')" />
         }
         @else if (activeTab() === 'Workflows') {
           <petrix-workflows [agent]="agent" [canManage]="canManage()" [languages]="options()?.languages || []" (busyChange)="busy.set($event ? 'workflows' : '')" (saved)="workflowRevision.set($event)" />

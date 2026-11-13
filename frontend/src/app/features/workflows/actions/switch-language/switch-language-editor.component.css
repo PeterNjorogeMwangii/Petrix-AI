@@ -1,0 +1,4 @@
+:host { display:block; }
+fieldset { border:0; padding:0; margin:0; min-width:0; }
+.field-note { line-height:1.8; }
+.language-note { font-size:11px; line-height:1.9; color:#aaa1aa; margin:22px 0; padding:13px 14px; border:1px solid #4a4037; border-radius:7px; background:#ff8b4505; }

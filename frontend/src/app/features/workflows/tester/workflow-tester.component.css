@@ -1,4 +1,4 @@
-:host { display:flex; flex-direction:column; flex:1; min-height:0; height:100%; }
+:host { position:relative; display:flex; flex-direction:column; flex:1; min-height:0; height:100%; }
 .tester-title { display:flex; align-items:center; justify-content:space-between; margin-bottom:15px; }
 .tester-title > span { display:flex; align-items:center; gap:9px; font-weight:600; font-size:14px; }
 .tester-title > span petrix-icon { color:var(--accent); width:17px; height:17px; }
@@ -91,3 +91,7 @@ summary { cursor:pointer; padding:3px 0; font-size:10px; }
 .attachment-links a { display:flex; gap:7px; color:#e3c6a3; font-size:10px; line-height:1.5; text-decoration:underline; overflow-wrap:anywhere; }
 .attachment-links petrix-icon { width:13px; height:13px; margin-top:3px; }
 .attachment-links small { display:block; color:#a6a0a8; text-decoration:none; margin-top:3px; }
+
+.bubble.carousel-bubble{width:100%;padding:10px 9px}.message-row:has(.carousel-bubble) .message-content{flex:1;min-width:0;max-width:calc(100% - 38px)}.chat-webview{position:absolute;inset:0;z-index:20;background:#1a1a1e;display:flex;flex-direction:column;border:1px solid #44444b;border-radius:9px;overflow:hidden}.chat-webview>header{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:14px;border-bottom:1px solid #38383f}.chat-webview strong{display:block;overflow-wrap:anywhere;font-size:13px}.chat-webview a{display:block;color:var(--accent);font-size:11px;text-decoration:none;margin-top:7px}.chat-webview header button{background:none;border:0;color:var(--text);padding:7px;flex:none}.chat-webview header petrix-icon{display:block;width:18px;height:18px}.chat-webview>p{font-size:10px;line-height:1.6;color:var(--muted);margin:0;padding:10px 14px}.chat-webview iframe{flex:1;min-height:0;width:100%;background:white;border:0}
+
+.feedback-saved{font-size:11px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;background:#98c9a810;border:1px solid #425b49;border-radius:8px;color:#bddac6;margin:10px 0}.feedback-saved small{display:block;margin-top:6px;color:var(--muted);font-size:10px}

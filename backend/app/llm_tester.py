@@ -12,7 +12,7 @@ class LLMTester:
     def available(self):
         return bool(self.settings.llm_base_url and self.settings.llm_model)
 
-    def reply(self, agent, messages):
+    def reply(self, agent, messages, language=None):
         if not self.available:
             raise HTTPException(503, "Connect a language model before testing generative replies.")
         headers = {}
@@ -20,9 +20,13 @@ class LLMTester:
         if key:
             headers["Authorization"] = "Bearer " + key
         prompt = agent.persona or "You are a helpful assistant."
-        prompt += "\nRespond in the user's supported language where possible. Supported languages: {}. Default: {}.".format(
-            ", ".join(agent.languages), agent.default_language
-        )
+        if language is not None:
+            if language not in agent.languages:
+                raise HTTPException(422, "Choose a language configured for this agent.")
+            prompt += "\nActive conversation language: {}. Respond in this language. Supported languages: {}.".format(language, ", ".join(agent.languages))
+        else:
+            prompt += "\nRespond in the user's supported language where possible. Supported languages: {}. Default: {}.".format(
+                ", ".join(agent.languages), agent.default_language)
         try:
             with httpx.Client(timeout=self.settings.llm_timeout_seconds, follow_redirects=False) as client:
                 response = client.post(self.settings.llm_base_url.rstrip("/") + "/chat/completions", headers=headers,

@@ -8,8 +8,8 @@ Each milestone joins frontend behaviour to the matching backend functionality be
 | 2 — implemented | Default agents; create/import/export/delete; personas, languages, identity, voice preferences; permissions, capacity, versions, change log, network, and optional real model-connected tester |
 | 3 — implemented | Workflow builder, trigger/action trees, insertion and ordering, enable/disable, Send message, manual translations, quick replies, and event-driven tester |
 | 3.1 — implemented | Permanent step numbers and layered fuzzy/semantic/Groq intent recognition with ambiguity handling, clarification, entity/context results, and tester diagnostics |
-| 4 — in progress | Set variable implemented with its own editor, expressions, typed session storage, and message placeholders. Configure the remaining action types individually: branches, jumps, API requests, LLM Processing, data and handoff actions. |
-| 5 | Knowledge sources: uploads, snippets, URLs, processing status, retrieval-backed answers |
+| 4 — in progress | Set variable, Jump, Ask survey, Branch, Send API, SQL Query, Switch Language, Send Attachment, Show Carousel, Collect Feedback, Close Chat, and LLM Processing are implemented with editors and runtime handlers. Close Chat invokes Chat Closed once; feedback provides Rating/Survey/Settings, persisted answer variables, safe post-submission continuation, and channel previews in the tester. LLM Processing uses Groq with text/Python prompts, response variables, outcome paths, and enabled per-agent Knowledge text sources. Remaining actions include graph, handoff, ticket, and other data actions. |
+| 5 — text sources implemented | Per-agent text Knowledge supports LLM Processing. Uploads, URLs, processing status, and retrieval-backed answers remain future work. |
 | 6 | Channel publishing: webchat first, then WhatsApp and other required channels |
 | 7 | Livechats, inbox, teams, routing, human handoff, tickets, and people |
 | 8 | Analytics, moderation, billing integration, production deployment, and extended governance |

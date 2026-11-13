@@ -1,2 +1,3 @@
-"""Reserved action module; configuration and execution will be added later."""
-DEFINITION = {"type":"sql_query","name":"SQL query","group":"AI & data","description":"Run a read-only query on a connected database.","available": False}
+"""Read-only database lookups with explicit outcome paths."""
+DEFINITION = {"type": "sql_query", "name": "SQL Query", "group": "AI & data",
+    "description": "Execute a read-only SQL query against a connected database and store the results in a session variable.", "available": True}

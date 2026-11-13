@@ -72,7 +72,7 @@ python -m alembic current
 python -m uvicorn app.main:create_app --factory --reload --port 8000 --no-access-log
 ```
 
-The migration check should show `0005 (head)`. Migration `0005` adds `agent_attachments`; it does not reset existing workflows, numbers, accounts, or conversations. No new dependency is required for Ask survey. Restart Angular with your existing `npm start` command.
+The migration check should show `0006 (head)`. Migration `0005` adds `agent_attachments`; it does not reset existing workflows, numbers, accounts, or conversations. No new dependency is required for Ask survey. Restart Angular with your existing `npm start` command.
 
 ## API
 

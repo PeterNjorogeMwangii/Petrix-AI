@@ -57,6 +57,28 @@ class Settings(BaseSettings):
     intent_llm_threshold: float = 0.80
     intent_llm_timeout_seconds: int = 15
     intent_llm_max_tokens: int = 2048
+    llm_processing_max_tokens: int = 4096
+    send_api_allowed_private_hosts: str = ""
+    database_connections_encryption_key: SecretStr = SecretStr("")
+
+    @field_validator("database_connections_encryption_key")
+    @classmethod
+    def valid_database_key(cls, value):
+        if value.get_secret_value():
+            from cryptography.fernet import Fernet
+            try: Fernet(value.get_secret_value().encode("ascii"))
+            except (ValueError, UnicodeError):
+                raise ValueError("DATABASE_CONNECTIONS_ENCRYPTION_KEY must be a Fernet key (32 URL-safe base64-encoded bytes).") from None
+        return value
+
+    @field_validator("send_api_allowed_private_hosts")
+    @classmethod
+    def private_api_hosts(cls, value):
+        import re
+        hosts = [host.strip().lower().rstrip(".") for host in value.split(",") if host.strip()]
+        if any(not re.fullmatch(r"[a-z0-9.:-]+", host) for host in hosts):
+            raise ValueError("List exact API hostnames or IP addresses, separated by commas, without schemes, paths, or wildcards.")
+        return ",".join(dict.fromkeys(hosts))
 
     @field_validator("frontend_origin", "api_base_url")
     @classmethod
@@ -87,6 +109,8 @@ class Settings(BaseSettings):
             raise ValueError("Intent similarity thresholds and margins must be between 0 and 1.")
         if not 1 <= self.embedding_timeout_seconds <= 60 or not 1 <= self.intent_llm_timeout_seconds <= 60 or not 256 <= self.intent_llm_max_tokens <= 4096:
             raise ValueError("Intent provider request limits are invalid.")
+        if not 256 <= self.llm_processing_max_tokens <= 8192:
+            raise ValueError("LLM_PROCESSING_MAX_TOKENS must be between 256 and 8192.")
         if not self.embedding_model.strip() or not self.groq_intent_model.strip():
             raise ValueError("Specify embedding and intent model names.")
         if self.embedding_base_url:

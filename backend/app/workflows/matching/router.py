@@ -44,8 +44,8 @@ class MatchingSession:
                 eligible = [node for node in eligible if event["attachment"]["media_type"] in node["config"]["attachment_types"]]
             if eligible:
                 return self.finish(Decision(node=eligible[0], method="event", score=1.0))
-            return self.finish(Decision(node=fallback if event["event"] in {"attachment_received", "collect_feedback"} else None,
-                method="fallback" if fallback and event["event"] in {"attachment_received", "collect_feedback"} else "none"))
+            return self.finish(Decision(node=fallback if event["event"] in {"attachment_received"} else None,
+                method="fallback" if fallback and event["event"] in {"attachment_received"} else "none"))
 
         candidates = []
         for node in eligible:

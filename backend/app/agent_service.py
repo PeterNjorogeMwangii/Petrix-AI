@@ -153,6 +153,12 @@ def apply_configuration(agent, config, workspace):
 
 
 def save_agent(db, agent, actor_id, section, summary, before):
+    if agent.languages != before["languages"]:
+        from app.models import WorkflowDocument
+        from app.workflows.actions.switch_language.validation import validate_targets
+        document = db.get(WorkflowDocument, agent.id)
+        if document:
+            validate_targets(document.nodes, agent.languages)
     if configuration(agent) != before:
         agent.revision += 1
         agent.updated_at = utcnow()

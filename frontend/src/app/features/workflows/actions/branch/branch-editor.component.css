@@ -1,0 +1,23 @@
+:host { display:block; }
+fieldset { border:0; padding:0; margin:0; min-width:0; }
+.evaluation-note { color:var(--muted); font-size:11px; line-height:1.8; margin:0 0 18px; }
+.branch-condition { border:1px solid #3b3b42; border-radius:8px; background:#171719; padding:15px; margin-bottom:12px; }
+.branch-condition header { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:14px; }
+.condition-label { color:#e1c5ab; font-size:12px; font-weight:600; }
+.condition-tools { display:flex; gap:3px; }
+.condition-tools button { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border:0; border-radius:4px; background:transparent; color:var(--muted); }
+.condition-tools button:hover:not(:disabled) { color:var(--accent); background:#ffffff08; }
+.condition-tools button:disabled { opacity:.3; }
+.condition-tools petrix-icon { width:13px; height:13px; }
+.field { margin-bottom:16px; }.field:last-child { margin-bottom:0; }
+textarea { font-family:'Consolas','SFMono-Regular',monospace; font-size:11px; line-height:1.8; resize:vertical; min-height:110px; }
+.script-footer { display:flex; justify-content:space-between; gap:8px; font-size:9px; color:#85858f; margin-top:7px; }
+.add-condition { display:flex; align-items:center; gap:8px; border:1px solid #484039; border-radius:6px; background:#ff8b4509; color:#d4b79c; padding:12px; font-size:11px; width:100%; }
+.add-condition petrix-icon { width:13px; height:13px; }.add-condition span { margin-left:auto; color:var(--muted); font-size:10px; }
+.add-condition:disabled { opacity:.45; }
+.else-path { margin:18px 0; padding:15px; background:#181b19; border:1px solid #3a443e; border-radius:7px; }
+.else-path strong { font-size:12px; color:#b9ccbe; }.else-path p { font-size:11px; color:var(--muted); line-height:1.7; margin:8px 0 0; }
+.branch-note { display:flex; gap:9px; border-top:1px solid var(--border); padding-top:18px; color:#a6a3ac; }
+.branch-note petrix-icon { width:15px; height:15px; margin-top:3px; }.branch-note p { font-size:11px; line-height:1.8; margin:0; }
+.expression-help { margin-top:22px; font-size:11px; color:var(--muted); line-height:1.8; }summary { cursor:pointer; color:#bbb5ac; }
+.expression-help > div { padding:10px 0; }dt { margin:12px 0 5px; }dd { margin:0; }code { color:#e2bd9e; font-family:'Consolas','SFMono-Regular',monospace; font-size:10px; overflow-wrap:anywhere; }

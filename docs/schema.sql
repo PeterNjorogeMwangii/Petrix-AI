@@ -1,4 +1,4 @@
--- Petrix AI reference schema, version 0.5.0. Use Alembic to apply schema changes and seed defaults.
+-- Petrix AI reference schema, version 0.15.0 (migration head 0008). Apply changes using Alembic.
 
 CREATE TABLE auth_rate_limits (
 	key VARCHAR(64) NOT NULL, 
@@ -102,6 +102,32 @@ CREATE TABLE auth_sessions (
 CREATE INDEX ix_auth_sessions_expires_at ON auth_sessions (expires_at);
 
 CREATE INDEX ix_auth_sessions_user_id ON auth_sessions (user_id);
+
+CREATE TABLE database_connections (
+	id UUID NOT NULL, 
+	workspace_id UUID NOT NULL, 
+	name VARCHAR(100) NOT NULL, 
+	type VARCHAR(20) NOT NULL, 
+	host VARCHAR(253) NOT NULL, 
+	port INTEGER NOT NULL, 
+	database VARCHAR(128) NOT NULL, 
+	username VARCHAR(128) NOT NULL, 
+	password_encrypted TEXT NOT NULL, 
+	ssl_mode VARCHAR(20) NOT NULL, 
+	status VARCHAR(20) NOT NULL, 
+	last_error VARCHAR(50), 
+	revision INTEGER NOT NULL, 
+	verified_at TIMESTAMP WITH TIME ZONE, 
+	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_database_connection_name UNIQUE (workspace_id, name), 
+	CONSTRAINT ck_database_connection_revision CHECK (revision >= 1), 
+	CONSTRAINT ck_database_connection_port CHECK (port >= 1 AND port <= 65535), 
+	FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE
+);
+
+CREATE INDEX ix_database_connections_workspace_id ON database_connections (workspace_id);
 
 CREATE TABLE magic_links (
 	id UUID NOT NULL, 
@@ -227,15 +253,50 @@ CREATE INDEX ix_agent_versions_agent_id ON agent_versions (agent_id);
 
 CREATE TABLE agent_workflows (
 	agent_id UUID NOT NULL, 
-	revision INTEGER NOT NULL,
+	revision INTEGER NOT NULL, 
 	next_node_number INTEGER NOT NULL, 
 	nodes JSON NOT NULL, 
 	updated_at TIMESTAMP WITH TIME ZONE NOT NULL, 
 	PRIMARY KEY (agent_id), 
-	CONSTRAINT ck_workflow_revision CHECK (revision >= 1),
+	CONSTRAINT ck_workflow_revision CHECK (revision >= 1), 
 	CONSTRAINT ck_workflow_next_node_number CHECK (next_node_number >= 1), 
 	FOREIGN KEY(agent_id) REFERENCES ai_agents (id) ON DELETE CASCADE
 );
+
+CREATE TABLE workflow_assets (
+	id UUID NOT NULL, 
+	workspace_id UUID NOT NULL, 
+	agent_id UUID NOT NULL, 
+	file_name VARCHAR(255) NOT NULL, 
+	file_format VARCHAR(16) NOT NULL, 
+	content_type VARCHAR(120) NOT NULL, 
+	size_bytes INTEGER NOT NULL, 
+	data BYTEA NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT ck_workflow_asset_size CHECK (size_bytes > 0 AND size_bytes <= 20971520), 
+	FOREIGN KEY(workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE, 
+	FOREIGN KEY(agent_id) REFERENCES ai_agents (id) ON DELETE CASCADE
+);
+
+CREATE INDEX ix_workflow_assets_agent_id ON workflow_assets (agent_id);
+
+CREATE INDEX ix_workflow_assets_workspace_id ON workflow_assets (workspace_id);
+
+CREATE TABLE agent_attachments (
+	id UUID NOT NULL, 
+	conversation_id UUID NOT NULL, 
+	file_name VARCHAR(255) NOT NULL, 
+	content_type VARCHAR(120) NOT NULL, 
+	size_bytes INTEGER NOT NULL, 
+	data BYTEA NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT ck_agent_attachment_size CHECK (size_bytes > 0 AND size_bytes <= 20971520), 
+	FOREIGN KEY(conversation_id) REFERENCES agent_conversations (id) ON DELETE CASCADE
+);
+
+CREATE INDEX ix_agent_attachments_conversation_id ON agent_attachments (conversation_id);
 
 CREATE TABLE agent_messages (
 	id UUID NOT NULL, 
@@ -250,13 +311,14 @@ CREATE TABLE agent_messages (
 
 CREATE INDEX ix_agent_messages_conversation_id ON agent_messages (conversation_id);
 
-CREATE TABLE agent_attachments (
- id UUID PRIMARY KEY,
- conversation_id UUID NOT NULL REFERENCES agent_conversations(id) ON DELETE CASCADE,
- file_name VARCHAR(255) NOT NULL,
- content_type VARCHAR(120) NOT NULL,
- size_bytes INTEGER NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 10485760),
- data BYTEA NOT NULL,
- created_at TIMESTAMP WITH TIME ZONE NOT NULL
+
+-- Migration 0008: per-agent text sources, independent of workflow/settings revisions.
+CREATE TABLE agent_knowledge (
+    agent_id UUID NOT NULL,
+    revision INTEGER NOT NULL,
+    sources JSON NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    PRIMARY KEY (agent_id),
+    CONSTRAINT ck_agent_knowledge_revision CHECK (revision >= 1),
+    FOREIGN KEY(agent_id) REFERENCES ai_agents (id) ON DELETE CASCADE
 );
-CREATE INDEX ix_agent_attachments_conversation_id ON agent_attachments(conversation_id);

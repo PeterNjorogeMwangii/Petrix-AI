@@ -1,6 +1,11 @@
 import { Component, Input } from '@angular/core';
 
 const paths: Record<string, string> = {
+  chat_end: 'M4 4h16v13H9l-5 4ZM2 2l20 20',
+  copy: 'M8 8h12v13H8ZM16 8V3H3v13h5',
+  language: 'M3 5h12M9 2v3M5 5c0 6 4 10 9 12M13 5c0 6-4 10-9 12M14 21l4-11 4 11M15.5 17h5',
+  edit: 'M15 4l5 5M4 20l5-1L21 7a2 2 0 0 0-5-5L4 14Zm0 0 1-6',
+  database: 'M20 6c0 2-3.6 3-8 3S4 8 4 6s3.6-3 8-3 8 1 8 3ZM4 6v12c0 2 3.6 3 8 3s8-1 8-3V6M4 12c0 2 3.6 3 8 3s8-1 8-3',
   spark: 'M12 3l2.3 6.7L21 12l-6.7 2.3L12 21l-2.3-6.7L3 12l6.7-2.3Z',
   variable: 'M8 3H6v6l-3 3 3 3v6h2M16 3h2v6l3 3-3 3v6h-2M10 12h4',
   jump: 'M4 19v-7a5 5 0 0 1 5-5h11M15 2l5 5-5 5',
@@ -23,6 +28,8 @@ const paths: Record<string, string> = {
   upload: 'M12 16V3m-5 5 5-5 5 5M3 15v6h18v-6',
   lock: 'M6 10h12v11H6ZM8 10V7a4 4 0 0 1 8 0v3m-4 5v2',
   plus: 'M12 5v14M5 12h14',
+  star: 'm12 3 2.78 5.63L21 9.54l-4.5 4.39 1.06 6.2L12 17.2l-5.56 2.93 1.06-6.2L3 9.54l6.22-.91L12 3Z',
+  cards: 'M3 5h12v14H3zM18 5h3v14h-3M6 9h6M6 13h6',
   menu: 'M3 6h18M3 12h18M3 18h18',
   close: 'M6 6l12 12M18 6 6 18',
   refresh: 'M20 7v5h-5M4 17v-5h5M6 5a9 9 0 0 1 14 7M18 19a9 9 0 0 1-14-7',

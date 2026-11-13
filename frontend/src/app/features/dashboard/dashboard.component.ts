@@ -8,12 +8,15 @@ import { BrandComponent } from '../../shared/brand.component';
 import { IconComponent } from '../../shared/icon.component';
 import { WorkflowsComponent } from '../workflows/workflows.component';
 import { WorkflowTesterComponent } from '../workflows/tester/workflow-tester.component';
+import { SettingsComponent } from '../settings/settings.component';
+import { KnowledgeComponent } from '../knowledge/knowledge.component';
+import { ProfileMenuComponent } from '../../shared/profile-menu.component';
 
 type Modal = 'choose' | 'create' | 'import' | 'delete' | 'version';
 type Section = 'personalization' | 'languages' | 'identity' | 'voice';
 
 @Component({
-  selector: 'petrix-dashboard', imports: [FormsModule, DatePipe, TitleCasePipe, BrandComponent, IconComponent, WorkflowsComponent, WorkflowTesterComponent],
+  selector: 'petrix-dashboard', imports: [FormsModule, DatePipe, TitleCasePipe, BrandComponent, IconComponent, WorkflowsComponent, WorkflowTesterComponent, SettingsComponent, ProfileMenuComponent, KnowledgeComponent],
   templateUrl: './dashboard.component.html', styleUrl: './dashboard.component.css'
 })
 export class DashboardComponent implements OnInit, OnDestroy {
@@ -22,7 +25,10 @@ export class DashboardComponent implements OnInit, OnDestroy {
   private readonly route = inject(ActivatedRoute);
   @ViewChild('agentDialog') private dialog?: ElementRef<HTMLDialogElement>;
   @ViewChild(WorkflowsComponent) private workflowEditor?: WorkflowsComponent;
-  readonly settingsMode = this.route.snapshot.data['roles'] === true;
+  @ViewChild(KnowledgeComponent) private knowledgeEditor?: KnowledgeComponent;
+  @ViewChild(SettingsComponent) private settingsPanel?: SettingsComponent;
+  readonly settingsMode = this.route.snapshot.data['settings'] === true;
+  readonly settingsSection = this.route.snapshot.data['settingsKey'] || '';
   readonly loading = signal(true);
   readonly sidebarOpen = signal(false);
   readonly dropdownOpen = signal(false);
@@ -57,7 +63,7 @@ export class DashboardComponent implements OnInit, OnDestroy {
     { label: 'Analytics', icon: 'chart' }, { label: 'Perception', icon: 'eye' }
   ];
   readonly tabs = ['Agent', 'Knowledge', 'Workflows', 'Versions', 'Voice', 'Publish', 'Change log', 'Network'];
-  readonly availableTabs = new Set(['Agent', 'Workflows', 'Versions', 'Voice', 'Change log', 'Network']);
+  readonly availableTabs = new Set(['Agent', 'Knowledge', 'Workflows', 'Versions', 'Voice', 'Change log', 'Network']);
   agentSearch = ''; languageSearch = ''; activeSection = 'personalization';
   persona = ''; llmEnabled = true; assignedLanguages: string[] = []; defaultLanguage = 'en';
   identityName = ''; identityFile: File | null = null; identityPreview = ''; identityRemove = false;
@@ -84,7 +90,7 @@ export class DashboardComponent implements OnInit, OnDestroy {
 
   dirty(section?: Section): boolean {
     const agent = this.selected();
-    if (this.settingsMode) return !!this.roles() && (this.rolesAdmin !== this.roleValue('admin') || this.rolesMember !== this.roleValue('member'));
+    if (this.settingsMode) return !!this.settingsPanel?.dirty() || (this.settingsSection === 'workspace/roles' && !!this.roles() && (this.rolesAdmin !== this.roleValue('admin') || this.rolesMember !== this.roleValue('member')));
     if (!agent) return false;
     const states = {
       personalization: this.persona !== agent.persona || this.llmEnabled !== agent.llm_enabled,
@@ -92,9 +98,14 @@ export class DashboardComponent implements OnInit, OnDestroy {
       identity: this.identityName !== agent.name || !!this.identityFile || this.identityRemove,
       voice: this.voiceEnabled !== agent.voice_enabled || this.voiceName !== agent.voice_name || Number(this.voiceSpeed) !== agent.voice_speed
     };
-    return section ? states[section] : Object.values(states).some(Boolean) || !!this.workflowEditor?.dirty();
+    return section ? states[section] : Object.values(states).some(Boolean) || !!this.workflowEditor?.dirty() || !!this.knowledgeEditor?.dirty();
   }
-  canLeave() { return this.leavingConfirmed || !this.dirty() || window.confirm('You have unsaved changes. Discard them and continue?'); }
+  canLeave() {
+    if (this.workflowEditor?.busy() || this.knowledgeEditor?.busy()) return false;
+    if (this.leavingConfirmed) return true;
+    if (this.settingsPanel && !this.settingsPanel.canLeave()) return false;
+    return !this.dirty() || !!this.settingsPanel?.dirty() || window.confirm('You have unsaved changes. Discard them and continue?');
+  }
   @HostListener('window:beforeunload', ['$event']) beforeUnload(event: BeforeUnloadEvent) { if (this.dirty()) { event.preventDefault(); event.returnValue = ''; } }
   @HostListener('document:keydown.escape') escape() { this.dropdownOpen.set(false); this.languageOpen.set(false); this.testerOpen.set(false); }
   @HostListener('document:click', ['$event']) outsideClick(event: MouseEvent) {
@@ -105,7 +116,7 @@ export class DashboardComponent implements OnInit, OnDestroy {
   async load() {
     this.loading.set(true); this.error.set('');
     try {
-      const [options, result, roles] = await Promise.all([this.api.agentOptions(), this.api.agents(), this.settingsMode ? this.api.roles() : Promise.resolve(null)]);
+      const [options, result, roles] = await Promise.all([this.api.agentOptions(), this.api.agents(), this.settingsSection === 'workspace/roles' ? this.api.roles() : Promise.resolve(null)]);
       this.options.set(options); this.agents.set(result.agents); this.canManage.set(result.can_manage); this.usage.set(result.usage);
       if (roles) { this.roles.set(roles); this.rolesAdmin = this.roleValue('admin'); this.rolesMember = this.roleValue('member'); }
       let saved = '';
@@ -142,6 +153,7 @@ export class DashboardComponent implements OnInit, OnDestroy {
   async setTab(tab: string) {
     if (!this.availableTabs.has(tab) || !this.selected() || this.busy()) return;
     if (tab !== this.activeTab() && this.workflowEditor && !this.workflowEditor.canDiscard()) return;
+    if (tab !== this.activeTab() && this.knowledgeEditor && !this.knowledgeEditor.canDiscard()) return;
     this.activeTab.set(tab); this.error.set(''); await this.syncUrl(); await this.loadTab();
   }
   async loadTab(append = false) {
@@ -278,7 +290,7 @@ export class DashboardComponent implements OnInit, OnDestroy {
     catch (error) { this.error.set(errorMessage(error)); } finally { this.busy.set(''); }
   }
   resetTester() { this.testerResetKey.update(value => value + 1); }
-  async openSettings() { this.sidebarOpen.set(false); await this.router.navigateByUrl('/app/settings/workspace/roles'); }
+  async openSettings() { this.sidebarOpen.set(false); await this.router.navigateByUrl('/app/settings/teamspace/database-connections'); }
   async openAgents() { this.sidebarOpen.set(false); await this.router.navigateByUrl('/app/agents'); }
   futureFeature(label: string) { this.info.set(`${label} will be available in an upcoming milestone.`); this.sidebarOpen.set(false); }
   async logout() {

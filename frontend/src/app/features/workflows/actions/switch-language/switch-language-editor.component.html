@@ -1,0 +1,10 @@
+<fieldset [disabled]="disabled">
+  <div class="field"><label for="switch-target-language">Target language</label><select id="switch-target-language" [ngModelOptions]="{standalone:true}" [ngModel]="config.target_language" (ngModelChange)="select($event)" required>
+    <option value="" disabled>Select a language</option>
+    @if (unavailable()) { <option [value]="config.target_language" disabled>{{ config.target_language }} · Not configured</option> }
+    @for (language of languages; track language.code) { <option [value]="language.code">{{ language.name }}</option> }
+  </select><span class="field-note">Only languages configured in this agent’s Agent settings are available.</span>
+    @if (unavailable()) { <span class="field-error" role="alert">Select a configured language before saving.</span> }
+  </div>
+  <p class="language-note">The conversation continues in the selected language. Add translations for subsequent messages and trigger examples in that language.</p>
+</fieldset>

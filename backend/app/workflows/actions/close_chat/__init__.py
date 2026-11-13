@@ -1,2 +1,2 @@
-"""Reserved action module; configuration and execution will be added later."""
-DEFINITION = {"type":"close_chat","name":"Close chat","group":"Flow control","description":"Close the conversation.","available": False}
+"""Close the active conversation and start its post-conversation workflow."""
+DEFINITION = {"type":"close_chat","name":"Close chat","group":"Flow control","description":"Close the conversation and run its Chat Closed workflow.","available": True}

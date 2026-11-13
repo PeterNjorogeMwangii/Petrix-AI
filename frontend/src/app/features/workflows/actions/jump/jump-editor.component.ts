@@ -30,14 +30,14 @@ export class JumpEditorComponent {
     if (this.open) setTimeout(() => this.searchInput?.nativeElement.focus());
   }
   choose(target: JumpTarget) {
-    if (this.disabled || (this.active && !target.enabled)) return;
+    if (this.disabled || target.unavailableReason || (this.active && !target.enabled)) return;
     this.configChange.emit({ target_node_id: target.id }); this.open = false; this.search = '';
   }
   clear() { if (!this.disabled) { this.configChange.emit({ target_node_id: '' }); this.open = false; } }
   error() { return jumpConfigError(this.config, this.targets, this.active); }
   icon(target: JumpTarget) {
     return target.type === 'send_message' || target.type === 'message_received' ? 'chat'
-      : target.type === 'set_variable' ? 'variable' : target.type === 'jump' ? 'jump'
+      : target.type === 'set_variable' ? 'variable' : target.type === 'jump' ? 'jump' : target.type === 'switch_language' ? 'language' : target.type === 'sql_query' ? 'database' : target.type === 'send_api' ? 'globe' : target.type === 'branch' ? 'nodes' : target.type === 'ask_survey' ? 'survey'
       : target.type === 'fallback' ? 'help' : target.type === 'attachment_received' ? 'upload' : 'spark';
   }
 }

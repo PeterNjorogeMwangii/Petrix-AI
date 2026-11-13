@@ -9,14 +9,15 @@ from app.models import AgentChange, WorkflowDocument
 from app.workflows.actions.registry import ACTIONS, config_for
 from app.workflows.defaults import SYSTEM_TRIGGERS, default_nodes, node_id
 from app.workflows.numbering import assign_numbers, walk
+from app.workflows.paths import PATH_ACTIONS, path_ids
 from app.workflows.schemas import AttachmentTriggerConfig, EmptyConfig, MessageTriggerConfig
 
 TRIGGERS = [
     {"type": "message_received", "name": "Message received", "description": "Match a message against intent examples.", "top_level_only": False, "permanent": False},
     {"type": "attachment_received", "name": "Attachment received", "description": "Match an image, audio, video, or file event.", "top_level_only": False, "permanent": False},
     {"type": "fallback", "name": "Fallback", "description": "Run when no other trigger at this level matches.", "top_level_only": False, "permanent": False},
-    {"type": "collect_feedback", "name": "Collect feedback", "description": "Run when a closed chat receives a CSAT rating.", "top_level_only": False, "permanent": False},
-] + [{"type": value, "name": value.replace("_", " ").capitalize(), "description": "A permanent conversation event.",
+    {"type": "collect_feedback", "name": "Collect feedback", "description": "Run when a closed chat submits requested customer feedback.", "top_level_only": False, "permanent": False},
+] + [{"type": value, "name": value.replace("_", " ").capitalize(), "description": "Run post-conversation automation when a chat is closed." if value == "chat_closed" else "A permanent conversation event.",
     "top_level_only": True, "permanent": True} for value in SYSTEM_TRIGGERS]
 TRIGGER_TYPES = {item["type"] for item in TRIGGERS}
 
@@ -47,9 +48,11 @@ def validate_nodes(nodes, agent_id):
     if len(json.dumps(nodes, ensure_ascii=False).encode("utf-8")) > 1024 * 1024:
         raise HTTPException(422, "Keep the workflow definition below 1 MB.")
     seen = set()
+    node_count = 0
     permanent = set()
 
     def visit(siblings, depth):
+        nonlocal node_count
         if depth > 12:
             raise HTTPException(422, "Workflows support up to 12 nested levels.")
         fallbacks = 0
@@ -58,7 +61,8 @@ def validate_nodes(nodes, agent_id):
             if node["id"] in seen:
                 raise HTTPException(422, "Each workflow node must have a unique ID.")
             seen.add(node["id"])
-            if len(seen) > 500:
+            node_count += 1
+            if node_count > 500:
                 raise HTTPException(422, "An agent can have up to 500 workflow nodes.")
             if depth == 0 and node["kind"] != "trigger":
                 raise HTTPException(422, "Top-level workflows must begin with a trigger.")
@@ -84,12 +88,32 @@ def validate_nodes(nodes, agent_id):
                         raise HTTPException(422, "This action will be configured in a later milestone.")
                     node["config"] = config_for(node["type"]).model_validate(node["config"]).model_dump(mode="json")
             except ValidationError as error:
-                if node["type"] in {"set_variable", "jump", "ask_survey"}:
+                if node["type"] in {"set_variable", "jump", "ask_survey", "branch", "send_api", "sql_query", "switch_language", "send_attachment", "show_carousel", "collect_feedback", "close_chat", "llm_processing"}:
                     issue = error.errors(include_url=False, include_context=False, include_input=False)[0]
                     field = ".".join(map(str, issue["loc"]))
-                    raise HTTPException(422, "Step '{}', {}: {}".format(node["name"], field, issue["msg"])) from None
+                    location = ", " + field if field else ""
+                    raise HTTPException(422, "Step '{}'{}: {}".format(node["name"], location, issue["msg"].removeprefix("Value error, "))) from None
                 raise HTTPException(422, "Check the settings for '{}'.".format(node["name"])) from None
-            visit(node["children"], depth + 1)
+            if node["kind"] == "action" and node["type"] in PATH_ACTIONS:
+                if node["children"]:
+                    raise HTTPException(422, "Step '{}': Put nested steps inside one of this action's paths.".format(node["name"]))
+                expected_paths = path_ids(node)
+                paths = node.get("paths", [])
+                if len(paths) != len(expected_paths) or {path["id"] for path in paths} != set(expected_paths):
+                    raise HTTPException(422, "Step '{}': Provide exactly one action path for every configured outcome.".format(node["name"]))
+                by_id = {path["id"]: path for path in paths}
+                node["paths"] = [by_id[path_id] for path_id in expected_paths]
+                for path in node["paths"]:
+                    if path["id"] in seen:
+                        raise HTTPException(422, "Each workflow node and action path must have a unique ID.")
+                    seen.add(path["id"])
+                    visit(path["children"], depth + 1)
+            else:
+                if node.get("paths"):
+                    raise HTTPException(422, "Only Branch, Send API, SQL Query, and LLM Processing actions can contain outcome paths.")
+                # Keep older workflow documents byte-for-byte stable on no-op saves.
+                node.pop("paths", None)
+                visit(node["children"], depth + 1)
         if fallbacks > 1:
             raise HTTPException(422, "Keep one fallback trigger per level.")
 
@@ -104,6 +128,8 @@ def validate_nodes(nodes, agent_id):
         for node in values:
             enabled[node["id"]] = ancestors_enabled and node["enabled"]
             collect_enabled(node["children"], enabled[node["id"]])
+            for path in node.get("paths", []):
+                collect_enabled(path["children"], enabled[node["id"]])
 
     collect_enabled(nodes)
     for node in index.values():
@@ -116,6 +142,8 @@ def validate_nodes(nodes, agent_id):
             raise HTTPException(422, "Step '{}': The Jump target must exist in this agent's workflow. Update or remove the Jump before deleting its target.".format(node["name"]))
         if enabled[node["id"]] and not enabled[target_id]:
             raise HTTPException(422, "Step '{}': Enable the Jump target and its parent steps, or disable this Jump first.".format(node["name"]))
+    from app.workflows.post_close import validate_post_close
+    validate_post_close(nodes)
     return nodes
 
 
@@ -124,6 +152,12 @@ def save(db, agent, actor_id, body):
     if document.revision != body.expected_revision:
         raise HTTPException(409, "Workflows changed in another session. Reload workflows before saving.")
     nodes = validate_nodes([node.model_dump(mode="json") for node in body.nodes], agent.id)
+    from app.database_connections.service import validate_references
+    validate_references(db, agent.workspace_id, nodes)
+    from app.workflows.actions.switch_language.validation import validate_targets
+    validate_targets(nodes, agent.languages)
+    from app.workflows.assets import validate_references as validate_assets
+    validate_assets(db, agent, nodes)
     next_number = assign_numbers(nodes, document.nodes, document.next_node_number)
     if nodes != document.nodes:
         document.nodes = nodes

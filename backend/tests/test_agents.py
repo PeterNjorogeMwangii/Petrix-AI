@@ -259,7 +259,7 @@ def test_voice_preferences_saved_and_validated(client, agent_workspace):
 class FakeTester:
     available = True
     def __init__(self): self.calls = []
-    def reply(self, agent, history):
+    def reply(self, agent, history, language=None):
         self.calls.append((agent.name, history))
         return 'A real adapter would return the model response here.'
 

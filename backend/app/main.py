@@ -11,9 +11,12 @@ from app.core.config import Settings
 from app.database import create_database
 from app.mailer import SMTPMailer
 from app.oauth import create_oauth
-from app.routes import agents, auth, workflows, workspaces
+from app.routes import agents, auth, database_connections, knowledge, workflow_assets, workflows, workspaces
+from app.database_connections.client import DatabaseClient
 from app.llm_tester import LLMTester
 from app.workflows.matching.router import IntentMatcher
+from app.workflows.actions.send_api.client import SendAPIClient
+from app.workflows.actions.llm_processing.client import GroqProcessingClient
 
 
 def create_app(settings: Optional[Settings] = None, mailer=None) -> FastAPI:
@@ -25,7 +28,7 @@ def create_app(settings: Optional[Settings] = None, mailer=None) -> FastAPI:
         yield
         engine.dispose()
 
-    application = FastAPI(title="Petrix AI", version="0.5.0", description="AI agents, workflows, surveys, Jump redirects, session variables, and layered intent matching.", lifespan=lifespan)
+    application = FastAPI(title="Petrix AI", version="0.15.0", description="LLM Processing with Groq and agent-owned Knowledge text sources, AI agents, workflows, Close Chat actions and permanent Chat Closed automation and localised rating/survey feedback with saved variables and continuation, localised file attachments and interactive carousels, surveys, conversation language switching, read-only SQL queries, verified database connections, HTTPS API requests, conditional Branch paths, Jump redirects, session variables, and layered intent matching.", lifespan=lifespan)
     application.state.settings = settings
     application.state.engine = engine
     application.state.session_factory = session_factory
@@ -33,6 +36,9 @@ def create_app(settings: Optional[Settings] = None, mailer=None) -> FastAPI:
     application.state.oauth = create_oauth(settings)
     application.state.llm_tester = LLMTester(settings)
     application.state.intent_matcher = IntentMatcher(settings)
+    application.state.llm_processing_client = GroqProcessingClient(settings)
+    application.state.send_api_client = SendAPIClient(settings.send_api_allowed_private_hosts.split(",") if settings.send_api_allowed_private_hosts else ())
+    application.state.database_client = DatabaseClient()
     application.add_middleware(CORSMiddleware, allow_origins=[settings.frontend_origin], allow_credentials=True, allow_methods=["GET", "POST"], allow_headers=["Content-Type", "X-Petrix-CSRF"])
     application.add_middleware(SessionMiddleware, secret_key=settings.session_signing_secret.get_secret_value(), session_cookie="petrix_oauth", max_age=600, same_site="lax", https_only=settings.secure_cookies)
 
@@ -64,5 +70,8 @@ def create_app(settings: Optional[Settings] = None, mailer=None) -> FastAPI:
     application.include_router(auth.router)
     application.include_router(workspaces.router)
     application.include_router(agents.router)
+    application.include_router(database_connections.router)
+    application.include_router(knowledge.router)
     application.include_router(workflows.router)
+    application.include_router(workflow_assets.router)
     return application

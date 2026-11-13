@@ -1,15 +1,20 @@
 import { DatePipe } from '@angular/common';
 import { Component, ElementRef, EventEmitter, Input, OnChanges, OnDestroy, Output, ViewChild, inject, signal } from '@angular/core';
+import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { FormsModule } from '@angular/forms';
 import { Agent } from '../../../core/models';
 import { errorMessage } from '../../../core/api.service';
 import { IconComponent } from '../../../shared/icon.component';
 import { MessageTextComponent } from '../../../shared/message-text.component';
-import { WorkflowEvent, WorkflowEventType, WorkflowMessage, WorkflowTestResult } from '../workflow.models';
+import { CarouselButton, FeedbackChannel, WorkflowEvent, WorkflowEventType, WorkflowMessage, WorkflowTestResult } from '../workflow.models';
+import { FeedbackFormComponent, FeedbackSubmission } from './feedback-form.component';
+import { AttachmentPreviewComponent } from '../attachment-preview.component';
+import { CarouselMessageComponent } from './carousel-message.component';
+import { validCarouselLink } from '../actions/show-carousel/carousel-config';
 import { WorkflowsApi } from '../workflows.api';
 
 @Component({
-  selector: 'petrix-workflow-tester', imports: [FormsModule, DatePipe, IconComponent, MessageTextComponent],
+  selector: 'petrix-workflow-tester', imports: [FormsModule, DatePipe, IconComponent, MessageTextComponent, AttachmentPreviewComponent, CarouselMessageComponent, FeedbackFormComponent],
   templateUrl: './workflow-tester.component.html', styleUrl: './workflow-tester.component.css'
 })
 export class WorkflowTesterComponent implements OnChanges, OnDestroy {
@@ -22,11 +27,16 @@ export class WorkflowTesterComponent implements OnChanges, OnDestroy {
   @ViewChild('messageList') messageList?: ElementRef<HTMLElement>;
   @ViewChild('surveyUpload') surveyUpload?: ElementRef<HTMLInputElement>;
   private readonly api = inject(WorkflowsApi);
+  private readonly sanitizer = inject(DomSanitizer);
+  readonly webview = signal<{url: string; title: string; src: SafeResourceUrl} | null>(null);
+  private webviewOpener: HTMLElement | null = null;
+  @ViewChild('webviewClose') webviewClose?: ElementRef<HTMLButtonElement>;
   readonly busy = signal(false);
   readonly error = signal('');
   readonly messages = signal<WorkflowMessage[]>([]);
   readonly result = signal<WorkflowTestResult | null>(null);
   text = ''; language = 'en';
+  channel: FeedbackChannel = 'webchat';
   selectedFiles: File[] = [];
   eventType: WorkflowEventType = 'attachment_received';
   attachmentType = 'image'; attachmentName = 'test-document.png'; rating = 5;
@@ -39,30 +49,46 @@ export class WorkflowTesterComponent implements OnChanges, OnDestroy {
       this.inputKey = key; this.language = this.agent?.default_language || 'en'; void this.restart();
     }
   }
-  ngOnDestroy() { ++this.requestId; }
+  ngOnDestroy() { ++this.requestId; this.webview.set(null); }
   languageName(code: string) { return this.languages.find(value => value.code === code)?.name || code; }
   ready() { return !!this.agent && this.canManage && !!this.result() && !this.result()?.closed; }
   private setBusy(value: boolean) { this.busy.set(value); this.busyChange.emit(value); }
   async restart() {
+    this.closeWebview(false);
     const request = ++this.requestId;
     this.messages.set([]); this.result.set(null); this.error.set(''); this.text = ''; this.selectedFiles = [];
     if (!this.agent || !this.canManage) { this.setBusy(false); return; }
     const id = this.agent.id; this.setBusy(true);
     try {
-      const result = await this.api.event(id, { event: 'chat_started', language: this.language });
+      const result = await this.api.event(id, { event: 'chat_started', language: this.language, channel: this.channel });
       if (request === this.requestId) this.accept(result);
     } catch (error) { if (request === this.requestId) this.error.set(errorMessage(error)); }
     finally { if (request === this.requestId) this.setBusy(false); }
   }
   private accept(result: WorkflowTestResult) {
+    if (result.closed) this.closeWebview(false);
     if (this.result()?.survey?.answer_token !== result.survey?.answer_token) {
       this.selectedFiles = []; if (this.surveyUpload) this.surveyUpload.nativeElement.value = '';
     }
-    this.result.set(result); this.language = result.language; this.messages.update(values => [...values, ...result.messages]); this.scroll();
+    this.result.set(result); this.language = result.language; this.channel = result.channel || 'webchat'; this.messages.update(values => [...values, ...result.messages]); this.scroll();
   }
+  carouselActive(message: WorkflowMessage) {
+    if (!this.ready() || this.busy() || this.result()?.survey) return false;
+    const messages = this.messages(); const index = messages.findIndex(value => value.id === message.id);
+    return index >= 0 && !messages.slice(index + 1).some(value => value.role === 'user' || value.role === 'event' || value.survey || value.quick_replies?.length || value.carousel?.cards.some(card => card.buttons.some(button => button.type === 'reply')));
+  }
+  openWebview(value: {button: CarouselButton; opener: EventTarget | null}) {
+    if (!validCarouselLink(value.button.url)) { this.error.set('This webpage URL is not valid.'); return; }
+    this.webviewOpener = value.opener instanceof HTMLElement ? value.opener : null;
+    // The URL is validated locally and by the backend. The static iframe
+    // sandbox retains an opaque origin, even for a same-origin link.
+    this.webview.set({ url: value.button.url, title: value.button.label, src: this.sanitizer.bypassSecurityTrustResourceUrl(value.button.url) });
+    setTimeout(() => this.webviewClose?.nativeElement.focus(), 0);
+  }
+  closeWebview(restoreFocus = true) { this.webview.set(null); if (restoreFocus) this.webviewOpener?.focus(); this.webviewOpener = null; }
   surveyUsesFiles() { return ['attachment', 'attachments'].includes(this.result()?.survey?.answer_type || ''); }
   surveyAnswerLabel(type: string) { return ({text:'Text',number:'Number',email:'Email',phone:'Phone',attachment:'One file',attachments:'Files'} as Record<string,string>)[type] || type; }
-  fileSize(size: number) { return size < 1024 ? `${size} B` : size < 1048576 ? `${Math.round(size / 1024)} KiB` : `${(size / 1048576).toFixed(1)} MiB`; }
+  fileSize(size: number | null) { return size === null ? 'Hosted file' : size < 1024 ? `${size} B` : size < 1048576 ? `${Math.round(size / 1024)} KiB` : `${(size / 1048576).toFixed(1)} MiB`; }
   selectFiles(event: Event) {
     const input = event.target as HTMLInputElement;
     const files = Array.from(input.files || []);
@@ -112,9 +138,14 @@ export class WorkflowTesterComponent implements OnChanges, OnDestroy {
     const succeeded = await this.dispatch({ event: 'message_received', content });
     if (!succeeded) { this.messages.update(values => values.filter(value => value.id !== pendingId)); this.text = content; }
   }
+  async submitFeedback(submission: FeedbackSubmission) {
+    const current = this.result();
+    if (!this.canManage || !current?.feedback || !current.closed || current.feedback_submitted || this.busy()) return;
+    await this.dispatch({ event: 'collect_feedback', rating: submission.rating, feedback_answers: submission.answers, feedback_token: current.feedback.token });
+  }
   canSendEvent() {
     if (!this.agent || !this.canManage || !this.result() || this.busy()) return false;
-    return this.eventType === 'collect_feedback' ? this.result()!.closed && !this.result()!.feedback_submitted : !this.result()!.closed;
+    return this.eventType === 'collect_feedback' ? this.result()!.closed && !!this.result()!.feedback && !this.result()!.feedback?.fields.length && !!this.result()!.feedback?.rating_enabled && !this.result()!.feedback_submitted : !this.result()!.closed;
   }
   async simulate() {
     if (!this.canSendEvent()) return;
@@ -123,7 +154,7 @@ export class WorkflowTesterComponent implements OnChanges, OnDestroy {
       if (!this.attachmentName.trim()) { this.error.set('Enter an attachment name.'); return; }
       event.attachment = { name: this.attachmentName, media_type: this.attachmentType };
     }
-    if (this.eventType === 'collect_feedback') event.rating = Number(this.rating);
+    if (this.eventType === 'collect_feedback') { event.rating = Number(this.rating); event.feedback_token = this.result()?.feedback?.token; }
     await this.dispatch(event);
   }
   private async dispatch(event: WorkflowEvent) {
@@ -131,10 +162,10 @@ export class WorkflowTesterComponent implements OnChanges, OnDestroy {
     const request = ++this.requestId; const id = this.agent.id; this.setBusy(true); this.error.set(''); this.scroll();
     try {
       const token = event.event === 'message_received' || event.event === 'attachment_received' ? this.result()?.survey?.answer_token : undefined;
-      const result = await this.api.event(id, { ...event, conversation_id: this.result()!.conversation_id, language: this.language, survey_answer_token: token });
+      const result = await this.api.event(id, { ...event, conversation_id: this.result()!.conversation_id, language: this.language, channel: this.channel, survey_answer_token: token });
       if (request !== this.requestId) return false;
       if (event.event !== 'message_received') {
-        const names: Record<string, string> = { attachment_received: `Attachment test: ${this.attachmentName}`, chat_closed: 'Chat closed', collect_feedback: `CSAT submitted: ${this.rating} / 5`, chat_timeout: 'Chat timeout', ai_timeout: 'AI timeout' };
+        const names: Record<string, string> = { attachment_received: `Attachment test: ${this.attachmentName}`, chat_closed: 'Chat closed', collect_feedback: event.rating ? `Feedback submitted: ${event.rating} / 5` : 'Feedback submitted', chat_timeout: 'Chat timeout', ai_timeout: 'AI timeout' };
         this.messages.update(values => [...values, { id: crypto.randomUUID(), role: 'event', content: names[event.event] || event.event, created_at: new Date().toISOString() }]);
       }
       this.accept(result); return true;

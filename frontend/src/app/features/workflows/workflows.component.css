@@ -66,6 +66,21 @@ tbody tr:hover { background:#1d1d20; }
 .nested-tools { display:flex; flex-wrap:wrap; gap:10px; padding:8px 15px; background:#131315; border-bottom:1px solid #28282c; }
 .nested-tools button { background:transparent; border:0; color:#73737f; font-size:9px; padding:3px; }
 .nested-tools button:hover { color:var(--accent); }
+.branch-paths { padding:0 0 6px 12px; border-left:1px solid #745944; background:#121214; }
+.branch-path { border-bottom:1px solid #343038; }
+.branch-path-heading { padding:14px 14px 12px; background:#201c19; border-left:2px solid #a87d59; }
+.branch-path-heading > div { display:flex; align-items:baseline; flex-wrap:wrap; gap:9px; }
+.branch-path-heading span { color:#d3ad8d; font-size:10px; font-weight:600; }
+.branch-path-heading strong { color:#d5d0ca; font-size:11px; font-weight:500; overflow-wrap:anywhere; }
+.branch-path-heading code { display:block; color:#96918e; font-size:10px; line-height:1.7; margin-top:8px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.branch-path-heading small { display:block; color:var(--muted); font-size:10px; margin-top:7px; }
+.branch-path.default-path > .branch-path-heading { border-color:#68876f; background:#181e1a; }
+.branch-path.default-path > .branch-path-heading span { color:#adc0b0; }
+.branch-path.error-path > .branch-path-heading { border-color:#9c6262; background:#21191a; }
+.branch-path.error-path > .branch-path-heading span { color:#d3a4a4; }
+.branch-path.timeout-path > .branch-path-heading { border-color:#9e854d; background:#201d16; }
+.branch-path.timeout-path > .branch-path-heading span { color:#c7b782; }
+.disabled-paths .branch-path-heading { opacity:.5; }
 .delete-button:hover:not(:disabled) { color:#ed9898; }
 .empty-steps { color:var(--muted); font-size:11px; padding:18px; }
 .workflow-loading { display:flex; align-items:center; gap:10px; color:var(--muted); padding:70px 20px; font-size:12px; }

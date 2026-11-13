@@ -1,0 +1,37 @@
+<fieldset [disabled]="disabled">
+  @if (!hasTranslation) { <p class="translation-note">No carousel is configured for this language. Add cards here; the default carousel is used until you save.</p> }
+  <div class="card-count">Cards <span>{{ cards.length }} / 10</span></div>
+  @for (card of cards; track card.id; let index = $index) {
+    <section class="card-editor" [class.expanded]="expanded() === card.id" (dragover)="dragOver($event)" (drop)="drop($event,index)">
+      <header>
+        <button type="button" class="drag-handle" draggable="true" [attr.aria-label]="'Drag card ' + (index + 1) + ' to reorder'" (dragstart)="dragStart($event,card)" (dragend)="dragEnd()">⠿</button>
+        <button type="button" class="card-toggle" [attr.aria-expanded]="expanded() === card.id" [attr.aria-controls]="'card-settings-' + card.id" (click)="toggle(card.id)"><span>Card #{{ index + 1 }}<strong>{{ card.title || 'Untitled card' }}</strong></span><petrix-icon name="chevron" /></button>
+        <div class="card-tools"><button type="button" [attr.aria-label]="'Move card ' + (index + 1) + ' up'" [disabled]="disabled || index === 0" (click)="moveCard(index,-1)">↑</button><button type="button" [attr.aria-label]="'Move card ' + (index + 1) + ' down'" [disabled]="disabled || index === cards.length - 1" (click)="moveCard(index,1)">↓</button><button type="button" class="delete-card" [attr.aria-label]="'Delete card ' + (index + 1)" (click)="removeCard(index)"><petrix-icon name="trash" /></button></div>
+      </header>
+      @if (expanded() === card.id) {
+        <div class="card-fields" [id]="'card-settings-' + card.id">
+          <div class="field"><label [for]="'card-title-' + card.id">Title</label><input [id]="'card-title-' + card.id" [ngModelOptions]="{standalone:true}" [(ngModel)]="card.title" (ngModelChange)="update()" maxlength="80" placeholder="e.g. Transactions"><small>{{ card.title.length }} / 80</small></div>
+          <div class="field"><label [for]="'card-subtitle-' + card.id">Subtitle <span>Optional</span></label><textarea [id]="'card-subtitle-' + card.id" [ngModelOptions]="{standalone:true}" [(ngModel)]="card.subtitle" (ngModelChange)="update()" maxlength="200" rows="2" placeholder="A short description"></textarea><small>{{ card.subtitle.length }} / 200</small></div>
+          <petrix-carousel-image-editor [image]="card.image" [agentId]="agentId" [cardId]="card.id" [cardNumber]="index + 1" [disabled]="disabled" (imageChange)="setImage(index,$event)" (uploadBusyChange)="uploadBusyChange.emit($event)" (assetUploaded)="assetUploaded.emit($event)" />
+          <div class="button-heading">Buttons <span>{{ card.buttons.length }} / 3</span></div>
+          @for (button of card.buttons; track button.id; let buttonIndex = $index) {
+            <section class="button-editor" [attr.aria-label]="'Button ' + (buttonIndex + 1) + ' settings'"><header><span>Button {{ buttonIndex + 1 }}</span><button type="button" (click)="removeButton(index,buttonIndex)" [attr.aria-label]="'Remove button ' + (buttonIndex + 1)">Remove</button></header>
+              <div class="field"><label [for]="'button-label-' + button.id">Button label</label><input [id]="'button-label-' + button.id" [ngModelOptions]="{standalone:true}" [(ngModel)]="button.label" (ngModelChange)="update()" maxlength="80" placeholder="e.g. Select"></div>
+              <div class="field"><label [for]="'button-type-' + button.id">Button action</label><select [id]="'button-type-' + button.id" [ngModelOptions]="{standalone:true}" [(ngModel)]="button.type" (ngModelChange)="changeButtonType(index,buttonIndex)"><option value="reply">Send reply</option><option value="link">Link</option></select></div>
+              @if (button.type === 'reply') {
+                <div class="field"><label [for]="'button-message-' + button.id">Message sent</label><input [id]="'button-message-' + button.id" [ngModelOptions]="{standalone:true}" [(ngModel)]="button.message" (ngModelChange)="update()" maxlength="1000" placeholder="e.g. Transaction complaint"><p class="field-note">Add a nested Message received trigger matching this message to continue the workflow.</p></div>
+              } @else {
+                <div class="field"><label [for]="'button-url-' + button.id">Webpage URL</label><input [id]="'button-url-' + button.id" type="url" [ngModelOptions]="{standalone:true}" [(ngModel)]="button.url" (ngModelChange)="update()" maxlength="2048" placeholder="https://example.com/help"></div>
+                <label class="webview-option"><input type="checkbox" [ngModelOptions]="{standalone:true}" [(ngModel)]="button.webview" (ngModelChange)="update()">Open in webview</label><p class="field-note">Show the webpage inside the chat. An option to open a new tab is also available.</p>
+              }
+            </section>
+          }
+          <button class="add-button" type="button" (click)="addButton(index)" [disabled]="disabled || card.buttons.length >= 3">+ Add button</button>
+        </div>
+      }
+    </section>
+  }
+  <button class="add-button add-card" type="button" (click)="addCard()" [disabled]="disabled || cards.length >= 10"><petrix-icon name="plus" />Add card</button>
+  @if (error()) { <p class="validation-note" role="status">{{ error() }}</p> }
+  <p class="field-note">Translate titles, subtitles, labels, and reply messages for each language. Text fields accept chat variables such as {{ '{customer_name}' }}.</p>
+</fieldset>

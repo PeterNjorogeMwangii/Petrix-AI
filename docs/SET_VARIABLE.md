@@ -6,7 +6,7 @@ Set variable creates or updates data in one chat session. It does not send a mes
 
 Stop FastAPI and Angular, copy the updated project contents into your Petrix folder, and keep `backend/.env`, `.venv`, the database, and Mailpit. Python 3.9.12 remains supported. The current source includes new intent-matching dependencies; follow [INTENT_MATCHING.md](INTENT_MATCHING.md) to install them and configure the additional matching stages before restarting the services.
 
-Set variable uses the conversation JSON storage added in migration `0003`. The current release also includes migration `0004` for permanent workflow step numbers and `0005` for survey file storage. Run `python -m alembic upgrade head` from `backend` and verify `0005 (head)` before starting the API. See [WORKFLOWS.md](WORKFLOWS.md) for the upgrade commands and numbering behaviour.
+Set variable uses the conversation JSON storage added in migration `0003`. The current release also includes migration `0004` for permanent workflow step numbers, `0005` for survey file storage, and `0006` for database connections. Run `python -m alembic upgrade head` from `backend` and verify `0006 (head)` before starting the API. See [WORKFLOWS.md](WORKFLOWS.md) for the upgrade commands and numbering behaviour.
 
 ## Configure and test
 
@@ -42,7 +42,7 @@ Values retain their types: text, finite numbers, Booleans, `None`, lists, and ob
 | Conditional value | `"approved" if score >= 700 else "review"` |
 | Clean the incoming message | `message.strip().lower()` |
 | Structured data | `{"name": agent_name, "verified": False}` |
-| Read structured data | `customer["name"]` or `customer.get("name", "Unknown")` |
+| Read structured data | `customer.name`, `customer["name"]`, or `customer.get("name", "Unknown")` |
 | Read a list item | `products[0]` |
 | Format text | `f"{financial_institution}-{ticket_number}"` |
 
@@ -51,6 +51,8 @@ Supported operators: `+`, `-`, `*`, `/`, `//`, numeric `%`, unary signs, compari
 Functions: `str`, `int`, `float`, `bool`, `len`, `round`, `abs`, `min`, `max`, and `sum`. Use positional arguments. `int` and `float` accept one argument; rounding uses `round(value, precision)`. String methods: `lower`, `upper`, `strip`, `lstrip`, `rstrip`, `replace`, `split`, `join`, `startswith`, and `endswith`. Object `.get()` supports an optional default. Plain f-strings work; format specifications do not.
 
 Chat scripts are expressions rather than full Python programs. The interpreter does not expose imports, files, networking, arbitrary functions or attributes, assignments, loops, comprehensions, lambdas, or object mutation. It interprets an allow-listed AST without using `eval`, `exec`, or `compile`.
+
+Version `0.6.0` also supports read-only survey views: `answer.text` for text and `score.norm.value` for a number. Raw values, direct expressions, and existing message placeholders remain supported. Public dotted access resolves JSON keys only; private Python attributes remain blocked. See [BRANCH.md](BRANCH.md).
 
 ## System variables
 
@@ -63,7 +65,7 @@ These names are available directly or through the read-only `system` dictionary,
 | `default_language` | Agent's configured default language; read-only. |
 | `conversation_id` | Current saved chat ID, including during Chat started; read-only. |
 | `message` | Current event's text, or empty text on other events; read-only. |
-| `feedback_rating` | Current CSAT rating or `None`; read-only. |
+| `feedback_rating` | Default persisted Collect Feedback rating variable (integer 1–5); configurable/writable since 0.13.0. `system["feedback_rating"]` exposes the submitted CSAT value or `None`. |
 | `attachment_name`, `attachment_type` | Current attachment test's filename/category, or empty text; read-only. |
 
 `variables` is a read-only dictionary of custom values. Use `variables.get("name", default)` when a value may not exist yet. System names, helper function names, and Python keywords cannot be custom variable names. The supported system write is `language`, for example a name of `language` and script `"sw"`. Following actions immediately use that language, and the tester follows it on later turns. The agent's saved default remains unchanged.

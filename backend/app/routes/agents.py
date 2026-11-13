@@ -290,6 +290,8 @@ def tester_message(workspace_id: uuid.UUID, agent_id: uuid.UUID, body: TesterMes
         conversation = AgentConversation(workspace_id=workspace_id, agent_id=agent_id, user_id=session.user_id, agent_name=agent.name)
         db.add(conversation)
         db.flush()
+    if (conversation.workflow_state or {}).get("closed"):
+        raise HTTPException(409, "This chat is closed. Restart the tester to begin a new conversation.")
     recent = db.scalars(select(AgentMessage).where(AgentMessage.conversation_id == conversation.id)
         .order_by(AgentMessage.created_at.desc(), AgentMessage.id.desc()).limit(20)).all()
     history = [{"role": message.role, "content": message.content} for message in reversed(recent)]

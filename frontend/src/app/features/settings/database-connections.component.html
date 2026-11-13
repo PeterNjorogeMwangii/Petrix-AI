@@ -1,0 +1,31 @@
+<div class="page-heading"><div><h2>Database connections</h2><p>Databases connected here can be queried by AI agents in your workflows.</p></div><span class="heading-icon"><petrix-icon name="database" /></span></div>
+<div class="read-only"><petrix-icon name="lock" /><span>Database connection is read-only</span></div>
+@if (!canManage()) { <p class="notice" role="status">Only workspace owners and administrators can manage database connections.</p> }
+@else {
+  @if (error()) { <div class="notice" role="alert">{{ error() }}</div> }
+  @if (info()) { <div class="notice success" role="status">{{ info() }}</div> }
+  <div class="table-toolbar"><span>{{ connections().length }} connected {{ connections().length === 1 ? 'database' : 'databases' }}</span><button class="btn btn-primary" (click)="edit()" [disabled]="loading() || !!busy() || connections().length >= 20"><petrix-icon name="plus" />Connect database</button></div>
+  <div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
+    @if (loading()) { <tr><td colspan="4" class="empty"><span class="spinner"></span>Loading connections…</td></tr> }
+    @else { @for (connection of connections(); track connection.id) {
+      <tr><td><strong>{{ connection.name }}</strong><small>{{ connection.host }}:{{ connection.port }} / {{ connection.database }}</small></td><td><span class="database-type"><petrix-icon name="database" />PostgreSQL</span></td><td><span class="status" [class.verified]="connection.status === 'verified'" [class.failed]="connection.status === 'error'"><span></span>{{ connection.status === 'verified' ? 'Verified' : connection.status === 'error' ? 'Verification failed' : 'Unverified' }}</span>@if (connection.verified_at) { <small>Checked {{ connection.verified_at | date:'MMM d, h:mm a' }}</small> }</td><td><div class="row-actions"><button class="text-button" (click)="verify(connection)" [disabled]="!!busy()" [attr.aria-label]="'Verify ' + connection.name">@if (busy() === connection.id) { <span class="spinner"></span> } @else { <petrix-icon name="refresh" /> }Verify</button><button class="icon-button" (click)="edit(connection)" [disabled]="!!busy()" [attr.aria-label]="'Edit ' + connection.name"><petrix-icon name="edit" /></button><button class="icon-button danger" (click)="remove(connection)" [disabled]="!!busy()" [attr.aria-label]="'Delete ' + connection.name"><petrix-icon name="trash" /></button></div></td></tr>
+    } @empty { <tr><td colspan="4" class="empty"><petrix-icon name="database" /><strong>No results</strong><span>Connect a database to use it in your workflows.</span></td></tr> } }
+  </tbody></table></div>
+  <p class="bottom-note">PostgreSQL connections are supported. Only verified connections appear in SQL Query actions.</p>
+}
+<dialog #connectionDialog class="connection-dialog" aria-labelledby="connection-title" (cancel)="onCancel($event)">
+  @if (open()) { <form (ngSubmit)="save()"><header><div><span class="eyebrow">Database connection</span><h3 id="connection-title">{{ editing ? 'Edit connection' : 'Connect database' }}</h3></div><button type="button" class="icon-button" aria-label="Close connection form" (click)="close()" [disabled]="!!busy()"><petrix-icon name="close" /></button></header>
+    <div class="dialog-body"><p class="form-intro">Connect with a database account that has SELECT access to the tables your agent needs.</p><div class="read-only compact"><petrix-icon name="lock" />Queries run in read-only transactions.</div>
+      <fieldset [disabled]="!!busy()">
+        <div class="field"><label for="db-name">Connection name</label><input id="db-name" name="name" [(ngModel)]="value.name" maxlength="100" required placeholder="complaints_db" autocomplete="off"></div>
+        <div class="field"><label for="db-type">Database type</label><select id="db-type" name="type" [(ngModel)]="value.type"><option value="postgresql">PostgreSQL</option></select></div>
+        <div class="host-row"><div class="field"><label for="db-host">Host</label><input id="db-host" name="host" [(ngModel)]="value.host" maxlength="253" required placeholder="db.example.com" autocomplete="off" spellcheck="false"></div><div class="field"><label for="db-port">Port</label><input id="db-port" type="number" name="port" [(ngModel)]="value.port" min="1" max="65535" step="1" required></div></div>
+        <div class="field"><label for="db-database">Database name</label><input id="db-database" name="database" [(ngModel)]="value.database" maxlength="128" required placeholder="support" autocomplete="off" spellcheck="false"></div>
+        <div class="field"><label for="db-username">Username</label><input id="db-username" name="username" [(ngModel)]="value.username" maxlength="128" required placeholder="petrix_reader" autocomplete="off" spellcheck="false"></div>
+        <div class="field"><label for="db-password">Password</label><input id="db-password" type="password" name="password" [(ngModel)]="value.password" maxlength="1024" [required]="!editing" autocomplete="new-password"><span class="field-note">{{ editing ? 'Leave empty to keep the saved password.' : 'Stored encrypted. Passwords are never returned to the browser.' }}</span></div>
+        <div class="field"><label for="db-ssl">TLS mode</label><select id="db-ssl" name="ssl" [(ngModel)]="value.ssl_mode"><option value="verify-full">Verify certificate and hostname</option><option value="require">Require encryption</option><option value="disable">Disabled (local development)</option></select><span class="field-note">Certificate verification uses the trusted PostgreSQL CA certificate on the backend host.</span></div>
+      </fieldset>
+      @if (modalError()) { <div class="notice" role="alert">{{ modalError() }}</div> }
+    </div><footer><span>Verification can take up to 10 seconds.</span><div><button class="btn btn-secondary" type="button" (click)="close()" [disabled]="!!busy()">Cancel</button><button class="btn btn-primary" [disabled]="!!busy() || !valid() || (editing && !dirty())">@if (busy() === 'save') { <span class="spinner"></span> }{{ editing ? 'Save and verify' : 'Connect and verify' }}</button></div></footer>
+  </form> }
+</dialog>

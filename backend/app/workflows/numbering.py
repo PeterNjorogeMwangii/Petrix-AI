@@ -6,6 +6,8 @@ def walk(nodes):
     for node in nodes:
         yield node
         yield from walk(node["children"])
+        for path in node.get("paths", []):
+            yield from walk(path["children"])
 
 
 def assign_numbers(nodes, previous_nodes, next_number):

@@ -75,7 +75,6 @@ def parse_expression(source):
         ast.UnaryOp, ast.UAdd, ast.USub, ast.Not, ast.BoolOp, ast.And, ast.Or,
         ast.Compare, ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.In, ast.NotIn, ast.Is, ast.IsNot,
         ast.IfExp, ast.Subscript, ast.Slice, ast.Call, ast.Attribute, ast.JoinedStr, ast.FormattedValue)
-    method_nodes = {id(node.func) for node in nodes if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)}
     for node in nodes:
         if not isinstance(node, allowed):
             raise ScriptError("This expression uses an unsupported operation.")
@@ -85,8 +84,8 @@ def parse_expression(source):
             raise ScriptError("Use text concatenation instead of percent formatting.")
         if isinstance(node, ast.Name) and node.id.startswith("_"):
             raise ScriptError("Private names are not available in chat scripts.")
-        if isinstance(node, ast.Attribute) and (id(node) not in method_nodes or node.attr not in METHODS):
-            raise ScriptError("Only supported string methods and object.get() are available.")
+        if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
+            raise ScriptError("Private attributes are not available in chat scripts.")
         if isinstance(node, ast.Call):
             valid = isinstance(node.func, ast.Name) and node.func.id in FUNCTIONS or isinstance(node.func, ast.Attribute) and node.func.attr in METHODS
             if not valid or node.keywords or len(node.args) > 16:
@@ -255,6 +254,18 @@ class Interpreter:
             if node.id not in self.environment:
                 raise ScriptError("Variable '{}' is not set.".format(node.id))
             return data_only(self.environment[node.id])
+        if isinstance(node, ast.Attribute):
+            # Resolve JSON fields explicitly. Never access Python attributes.
+            value = self.evaluate(node.value)
+            if type(value) is dict and node.attr in value:
+                return value[node.attr]
+            # Survey values remain plain JSON for existing scripts/templates.
+            # These read-only views also work for previously collected answers.
+            if type(value) is str and node.attr == "text":
+                return value
+            if type(value) in {int, float} and node.attr == "norm":
+                return {"value": value}
+            raise ScriptError("This field is missing or is not supported for the value's type.")
         if isinstance(node, (ast.List, ast.Tuple)): return json_value([self.evaluate(item) for item in node.elts])
         if isinstance(node, ast.Dict): return json_value({self.evaluate(key): self.evaluate(value) for key, value in zip(node.keys, node.values)})
         if isinstance(node, ast.BinOp): return self.binary(node.op, self.evaluate(node.left), self.evaluate(node.right))

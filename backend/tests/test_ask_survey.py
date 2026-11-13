@@ -146,11 +146,12 @@ def test_lifecycle_events_interrupt_pending_surveys(type):
     agent, document = setup_tree()
     document.nodes[0]["children"] = [survey(field()), message("Abandoned")]
     target = next(node for node in document.nodes if node["type"] == type)
-    target["children"] = [message("Lifecycle handler")]
+    target["children"] = [node("action", "set_variable", config={"variable_name": "lifecycle_handled", "chat_script": "True"})] if type == "chat_closed" else [message("Lifecycle handler")]
     prepare(agent, document)
     first = run(agent, document)
     result = run(agent, document, first[0], type)
-    assert texts(result) == ["Lifecycle handler"] and "survey" not in result[0]
+    assert texts(result) == ([] if type == "chat_closed" else ["Lifecycle handler"]) and "survey" not in result[0]
+    if type == "chat_closed": assert result[0]["closed"] and result[0]["variables"]["lifecycle_handled"] is True
 
 
 def test_survey_final_answer_rolls_back_if_a_later_action_fails():

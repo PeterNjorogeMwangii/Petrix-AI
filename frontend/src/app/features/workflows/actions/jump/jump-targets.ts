@@ -1,4 +1,5 @@
 import { JumpConfig, WorkflowNode } from '../../workflow.models';
+import { actionPaths } from '../../workflow-tree';
 
 export interface JumpTarget {
   id: string;
@@ -9,6 +10,7 @@ export interface JumpTarget {
   path: string;
   enabled: boolean;
   ancestorsEnabled: boolean;
+  unavailableReason?: string;
 }
 
 export function workflowJumpTargets(nodes: WorkflowNode[]): JumpTarget[] {
@@ -19,6 +21,11 @@ export function workflowJumpTargets(nodes: WorkflowNode[]): JumpTarget[] {
       targets.push({ id: node.id, number: node.number, name: node.name, kind: node.kind, type: node.type,
         path: path.join(' / '), enabled, ancestorsEnabled });
       visit(node.children, [...path, node.name], enabled);
+      if (node.paths?.length) {
+        for (const branch of actionPaths(node)) {
+          visit(branch.children, [...path, node.name, [branch.label, branch.name].filter(Boolean).join(' · ')], enabled);
+        }
+      }
     }
   };
   visit(nodes, [], true);
@@ -29,6 +36,7 @@ export function jumpConfigError(config: JumpConfig, targets: JumpTarget[], activ
   if (!config.target_node_id) return 'Choose a trigger or action to jump to.';
   const target = targets.find(value => value.id === config.target_node_id);
   if (!target) return 'Choose an existing step in this agent’s workflow. A Jump cannot target itself.';
+  if (target.unavailableReason) return target.unavailableReason;
   if (active && !target.enabled) return 'Enable the target and its parent steps, or disable this Jump first.';
   return '';
 }

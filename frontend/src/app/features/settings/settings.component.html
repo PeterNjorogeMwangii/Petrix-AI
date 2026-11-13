@@ -1,0 +1,13 @@
+<div class="settings-layout">
+  <nav class="settings-nav" aria-label="Settings navigation"><h2>Settings</h2>
+    @for (group of groups; track group.key) { <section><h3>{{ group.label }}</h3>@for (item of group.items; track item[0]) {
+      <a [routerLink]="'/app/settings/' + group.key + '/' + item[0]" [class.active]="section === group.key + '/' + item[0]" [attr.aria-current]="section === group.key + '/' + item[0] ? 'page' : null"><span>{{ item[1] }}</span>@if (item[0] === 'database-connections') { <petrix-icon name="database" /> }</a>
+    }</section> }
+  </nav>
+  <div class="settings-page"><label class="mobile-settings" for="settings-section">Settings section<select id="settings-section" aria-label="Settings section" [ngModel]="section" (ngModelChange)="navigate($event)">@for (group of groups; track group.key) { <optgroup [label]="group.label">@for (item of group.items; track item[0]) { <option [value]="group.key + '/' + item[0]">{{ item[1] }}</option> }</optgroup> }</select></label>
+    <div class="settings-breadcrumb">Settings <span>/</span>{{ page().group }}<span>/</span>{{ page().label }}</div>
+    @if (section === 'teamspace/database-connections') { <petrix-database-connections /> }
+    @else if (section === 'workspace/roles') { <ng-content /> }
+    @else { <section class="planned-page"><span class="planned-icon"><petrix-icon name="settings" /></span><span class="planned-badge">Planned</span><h2>{{ page().label }}</h2><p>This Settings section will be available in a later update.</p><a routerLink="/app/settings/teamspace/database-connections">Go to Database connections<petrix-icon name="arrow" /></a></section> }
+  </div>
+</div>

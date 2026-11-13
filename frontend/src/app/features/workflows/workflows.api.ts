@@ -2,7 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { ApiService } from '../../core/api.service';
-import { WorkflowDocument, WorkflowEvent, WorkflowNode, WorkflowOptions, WorkflowTestResult } from './workflow.models';
+import { AttachmentFormat, WorkflowAssetMetadata, WorkflowDocument, WorkflowEvent, WorkflowNode, WorkflowOptions, WorkflowTestResult } from './workflow.models';
 
 @Injectable({ providedIn: 'root' })
 export class WorkflowsApi {
@@ -15,6 +15,16 @@ export class WorkflowsApi {
   }
   event(id: string, body: WorkflowEvent) {
     return firstValueFrom(this.http.post<WorkflowTestResult>(`${this.path(id)}/tester/events`, body));
+  }
+  uploadAsset(id: string, file: File, format: AttachmentFormat) {
+    const body = new FormData(); body.append('file', file); body.append('file_format', format);
+    return firstValueFrom(this.http.post<WorkflowAssetMetadata>(`${this.path(id)}/workflow-assets`, body));
+  }
+  asset(id: string, assetId: string) {
+    return firstValueFrom(this.http.get<WorkflowAssetMetadata>(`${this.path(id)}/workflow-assets/${assetId}`));
+  }
+  deleteAsset(id: string, assetId: string) {
+    return firstValueFrom(this.http.post(`${this.path(id)}/workflow-assets/${assetId}/delete`, {}));
   }
   uploadSurveyAnswer(id: string, conversationId: string, answerToken: string, files: File[], language: string) {
     const body = new FormData();

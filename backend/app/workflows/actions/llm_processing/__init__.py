@@ -1,2 +1,2 @@
-"""Reserved action module; configuration and execution will be added later."""
-DEFINITION = {"type":"llm_processing","name":"LLM processing","group":"AI & data","description":"Process input with a configured prompt.","available": False}
+"""Bounded text processing with the server-configured Groq model."""
+DEFINITION = {"type":"llm_processing","name":"LLM Processing","group":"AI & data","description":"Generate or analyse text and save the response in a chat variable.","available": True}

@@ -1,0 +1,42 @@
+<div class="feedback-tabs" role="tablist" aria-label="Feedback configuration">
+  @for (item of tabs; track item) { <button type="button" role="tab" [id]="'feedback-tab-'+item" [attr.aria-controls]="'feedback-panel-'+item" [attr.aria-selected]="tab===item" [attr.tabindex]="tab===item ? 0 : -1" (click)="tab=item" (keydown.arrowright)="shiftTab($event,1)" (keydown.arrowleft)="shiftTab($event,-1)">{{ item === 'rating' ? 'Rating' : item === 'survey' ? 'Survey' : 'Settings' }}</button> }
+</div>
+@if (!hasTranslation) { <p class="translation-note">This language has no feedback translation yet. Editing text creates one; otherwise the default language is used.</p> }
+<fieldset [disabled]="disabled">
+  @if (tab === 'rating') {
+    <section role="tabpanel" id="feedback-panel-rating" aria-labelledby="feedback-tab-rating">
+      <label class="feature-toggle"><span>Enable rating</span><input type="checkbox" role="switch" [ngModel]="value.rating_enabled" (ngModelChange)="value.rating_enabled=$event;update()" [ngModelOptions]="{standalone:true}"></label>
+      <fieldset class="rating-fields" [disabled]="disabled || !value.rating_enabled">
+        <div class="field"><label for="webchat-rating-title">Webchat rating title <span>*</span></label><input id="webchat-rating-title" [ngModelOptions]="{standalone:true}" [(ngModel)]="text.webchat_rating_title" (ngModelChange)="updateText()" maxlength="500"></div>
+        <div class="rating-preview" aria-label="Webchat rating preview"><strong>{{ text.webchat_rating_title || 'Please rate the conversation' }}</strong><div aria-hidden="true">@for (face of faces; track face) { <petrix-rating-face [value]="face" /> }</div></div>
+        <div class="field separated"><label for="rating-request-message">Rating request message <span>*</span></label><p>For non-Webchat messaging apps. Buttons 1–5 appear below this message. Bitrix24 and Africa’s Talking require a typed number.</p><textarea id="rating-request-message" [ngModelOptions]="{standalone:true}" [(ngModel)]="text.rating_request_message" (ngModelChange)="updateText()" maxlength="4000" rows="3"></textarea></div>
+        <div class="field separated"><label for="rating-variable">Set chat variable</label><p>Store the submitted rating in a new or existing chat variable.</p><div class="variable-control"><input id="rating-variable" [ngModelOptions]="{standalone:true}" [(ngModel)]="value.rating_variable_name" (ngModelChange)="update()" maxlength="64"><button type="button" aria-label="Copy rating variable" (click)="copy(value.rating_variable_name)"><petrix-icon name="copy" /></button></div><small>{{ copied===value.rating_variable_name ? 'Copied.' : 'Start with a letter; use letters, numbers, or underscores (up to 64 characters).' }}</small></div>
+      </fieldset>
+    </section>
+  } @else if (tab === 'survey') {
+    <section role="tabpanel" id="feedback-panel-survey" aria-labelledby="feedback-tab-survey">
+      <label class="feature-toggle"><span>Enable survey</span><input type="checkbox" role="switch" [ngModel]="value.survey_enabled" (ngModelChange)="value.survey_enabled=$event;update()" [ngModelOptions]="{standalone:true}"></label>
+      <fieldset [disabled]="disabled || !value.survey_enabled">
+        @for (field of value.fields; track field.id; let index=$index) {
+          <article class="survey-field">
+            <header><button class="field-heading" type="button" (click)="toggle(field.id)" [attr.aria-expanded]="expanded.has(field.id)"><span>{{ index+1 }}</span><strong>{{ drafts[field.id].question || 'Question '+(index+1) }}</strong><petrix-icon name="chevron" /></button><button type="button" [attr.aria-label]="'Move feedback field '+(index+1)+' up'" [disabled]="disabled || !value.survey_enabled || index===0" (click)="move(index,-1)">↑</button><button type="button" [attr.aria-label]="'Move feedback field '+(index+1)+' down'" [disabled]="disabled || !value.survey_enabled || index===value.fields.length-1" (click)="move(index,1)">↓</button><button class="delete-field" type="button" [attr.aria-label]="'Delete feedback field '+(index+1)" (click)="removeField(field.id)"><petrix-icon name="trash" /></button></header>
+            @if (expanded.has(field.id)) { <div class="survey-field-body">
+              <div class="field"><label [for]="'feedback-question-'+field.id">Question <span>*</span></label><textarea [id]="'feedback-question-'+field.id" [ngModelOptions]="{standalone:true}" [(ngModel)]="drafts[field.id].question" (ngModelChange)="updateField(field.id)" maxlength="1000" rows="3"></textarea></div>
+              <label class="required-field"><input type="checkbox" [ngModelOptions]="{standalone:true}" [(ngModel)]="field.required" (ngModelChange)="update()">Required field</label>
+              <div class="field separated"><h4>Person reply</h4><label [for]="'feedback-reply-'+field.id">Reply type</label><select [id]="'feedback-reply-'+field.id" [ngModelOptions]="{standalone:true}" [ngModel]="field.reply_type" (ngModelChange)="setType(field,$event)">@for (type of types; track type.value) { <option [value]="type.value">{{ type.label }}</option> }</select></div>
+              <div class="field"><label [for]="'feedback-placeholder-'+field.id">Webchat field placeholder</label><input [id]="'feedback-placeholder-'+field.id" [ngModelOptions]="{standalone:true}" [(ngModel)]="drafts[field.id].placeholder" (ngModelChange)="updateField(field.id)" maxlength="200"></div>
+              @if (field.reply_type==='choice') { <div class="field"><label>Choices</label>@for (choice of drafts[field.id].choices; track $index; let choiceIndex=$index) { <div class="choice-row"><input [attr.aria-label]="'Choice '+(choiceIndex+1)+' for field '+(index+1)" [ngModelOptions]="{standalone:true}" [(ngModel)]="drafts[field.id].choices[choiceIndex]" (ngModelChange)="updateField(field.id)" maxlength="100"><button type="button" [attr.aria-label]="'Delete choice '+(choiceIndex+1)+' for field '+(index+1)" (click)="removeChoice(field.id,choiceIndex)">×</button></div> }<button class="text-button" type="button" (click)="addChoice(field.id)" [disabled]="drafts[field.id].choices.length>=13">+ Add choice</button></div> }
+              <div class="field separated"><label [for]="'feedback-variable-'+field.id">Create variable</label><p>Store the submitted reply for use by the following workflow actions.</p><input [id]="'feedback-variable-'+field.id" [ngModelOptions]="{standalone:true}" [(ngModel)]="field.variable_name" (ngModelChange)="update()" maxlength="64"><small>Start with a letter; use letters, numbers, or underscores.</small></div>
+            </div> }
+          </article>
+        }
+        <button class="text-button add-field" type="button" (click)="addField()" [disabled]="disabled || !value.survey_enabled || value.fields.length>=50">+ Add field</button>
+      </fieldset>
+    </section>
+  } @else {
+    <section role="tabpanel" id="feedback-panel-settings" aria-labelledby="feedback-tab-settings">
+      <div class="field"><label for="feedback-submission-text">Feedback submission text <span>*</span></label><p>The text shown to the customer once their feedback is submitted.</p><textarea id="feedback-submission-text" [ngModelOptions]="{standalone:true}" [(ngModel)]="text.submission_text" (ngModelChange)="updateText()" maxlength="4000" rows="4"></textarea><small>Text supports chat variables, including the submitted rating and answers.</small></div>
+    </section>
+  }
+</fieldset>
+<p class="feedback-note">Feedback is collected after Chat Closed. Following actions run after submission, with the rating and survey variables available.</p>

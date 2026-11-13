@@ -1,22 +1,32 @@
 import uuid
+from copy import deepcopy
 from datetime import timedelta
 from typing import List, Optional
-from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from app.core.security import token_hash, utcnow
 from app.database import get_db
+from app.database_connections.service import SQLQueryService
 from app.models import AgentAttachment, AgentConversation, AgentMessage, RateLimit
 from app.routes.agents import access
 from app.workflows import runtime, service
 from app.workflows.actions.registry import ACTIONS
 from app.workflows.actions.ask_survey import handler as survey
+from app.workflows.actions.collect_feedback.config import DEFAULT_SUBMISSION
+from app.workflows.actions.collect_feedback.submission import accept_feedback, public_feedback
+from app.workflows.actions.llm_processing.service import LLMProcessingService
+from app.workflows.chat_script import ScriptError
+from app.workflows.context import ActionContext
+from app.workflows.templates import render
 from app.workflows import attachments
+from app.workflows.assets import AttachmentStore, file_response
 from app.workflows.numbering import walk
+from app.workflows.post_close import POST_CLOSE_ACTIONS
 from app.workflows.schemas import SaveWorkflows, TesterEvent
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}/agents/{agent_id}", tags=["Workflows"])
@@ -25,7 +35,9 @@ router = APIRouter(prefix="/api/workspaces/{workspace_id}/agents/{agent_id}", ta
 @router.get("/workflows")
 def get_workflows(workspace_id: uuid.UUID, agent_id: uuid.UUID, request: Request, db: Session = Depends(get_db)):
     access(request, db, workspace_id, agent_id=agent_id)
-    return {**service.payload(service.get_document(db, agent_id)), "triggers": service.TRIGGERS, "actions": list(ACTIONS.values())}
+    return {**service.payload(service.get_document(db, agent_id)), "triggers": service.TRIGGERS, "actions": [{**action, "allowed_after_close": action["type"] in POST_CLOSE_ACTIONS, "post_close_only": action["type"] == "collect_feedback"} for action in ACTIONS.values()],
+        "llm_processing": {"model": request.app.state.settings.groq_intent_model, "provider": "Groq",
+            "available": request.app.state.llm_processing_client.available, "knowledge_supported": True}}
 
 
 @router.post("/workflows")
@@ -37,6 +49,46 @@ def save_workflows(workspace_id: uuid.UUID, agent_id: uuid.UUID, body: SaveWorkf
 @router.post("/tester/events")
 def tester_event(workspace_id: uuid.UUID, agent_id: uuid.UUID, body: TesterEvent, request: Request, db: Session = Depends(get_db)):
     return process_event(workspace_id, agent_id, body, request, db)
+
+
+def result_payload(document, conversation, state, messages, trace, matching, matched, file_metadata=None, notice=None):
+    active_node = next((node for node in walk(document.nodes) if node["id"] == state.get("survey", {}).get("node_id")), None)
+    feedback = state.get("feedback_request") if state.get("closed") and not state.get("feedback_submitted") else None
+    automation_error = (state.get("feedback_automation") or state.get("close_automation") or {}).get("error")
+    return {"conversation_id": str(conversation.id), "messages": messages, "trace": trace,
+        "workflow_revision": document.revision, "language": state.get("language", "en"), "closed": bool(state.get("closed")),
+        "feedback_submitted": bool(state.get("feedback_submitted")), "waiting": bool(state.get("stack")) or bool(state.get("survey")),
+        "variables": state.get("variables", {}), "survey": survey.status(active_node, state) if active_node else None,
+        "feedback": {**public_feedback(feedback), "min_rating": 1, "max_rating": 5} if feedback else None,
+        "feedback_confirmation": state.get("feedback_confirmation"), "channel": state.get("channel", "webchat"),
+        "automation_error": automation_error, "closed_at": state.get("closed_at"), "close_source": state.get("close_source"), "csat_rating": state.get("csat_rating"),
+        "attachments": file_metadata or [], "matching": matching.report,
+        "notice": notice if notice is not None else "" if messages or matched else "No workflow matched this event. Add a matching trigger or enable a fallback."}
+
+
+def lock_conversation(db, conversation_id):
+    return db.scalar(select(AgentConversation).where(AgentConversation.id == conversation_id)
+        .with_for_update().execution_options(populate_existing=True))
+
+
+def store_input(db, conversation, body, files):
+    if body.event == "message_received":
+        db.add(AgentMessage(conversation_id=conversation.id, role="user", content=body.content))
+    elif body.event == "attachment_received":
+        db.add(AgentMessage(conversation_id=conversation.id, role="user",
+            content="Uploaded: " + ", ".join(file["name"] for file in files) if files else "Attachment test: " + body.attachment.name,
+            message_data={"event": body.event, "attachment": body.attachment.model_dump(), "attachments": files}))
+
+
+def store_output(db, conversation, output):
+    messages = []
+    for result in output:
+        message = AgentMessage(conversation_id=conversation.id, role="assistant", content=result["content"],
+            message_data={key: value for key, value in result.items() if key != "content"})
+        db.add(message); db.flush()
+        messages.append({"id": str(message.id), "role": message.role, "content": message.content,
+            "created_at": message.created_at.isoformat(), **message.message_data})
+    return messages
 
 
 def process_event(workspace_id, agent_id, body, request, db, upload_payloads=None):
@@ -62,14 +114,37 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
             agent_name=agent.name, workflow_state={})
         db.add(conversation)
         db.flush()
-    previous = conversation.workflow_state or {}
+    previous = deepcopy(conversation.workflow_state or {})
+    if body.channel and previous.get("channel") and body.channel != previous["channel"]:
+        raise HTTPException(409, "Restart the tester before changing its channel preview.")
+    previous.setdefault("channel", body.channel or "webchat")
     if previous.get("closed") and body.event != "collect_feedback":
         raise HTTPException(409, "This chat is closed. Restart the tester to begin a new conversation.")
+    pending_feedback = None
     if body.event == "collect_feedback":
         if not previous.get("closed"):
             raise HTTPException(409, "Close the chat before submitting CSAT feedback.")
         if previous.get("feedback_submitted"):
             raise HTTPException(409, "Feedback has already been submitted for this chat.")
+        pending_feedback = previous.get("feedback_request")
+        if not pending_feedback:
+            raise HTTPException(409, "Feedback has not been requested for this chat.")
+        if str(body.feedback_token or "") != pending_feedback.get("token"):
+            raise HTTPException(409, "Use the rating request issued for this conversation.")
+        previous = accept_feedback(pending_feedback, body.rating, {str(key): value for key, value in body.feedback_answers.items()}, agent, previous)
+    lifecycle_key = "close_automation" if body.event == "chat_closed" else "feedback_automation" if body.event == "collect_feedback" else None
+    if lifecycle_key:
+        if body.event == "chat_closed":
+            previous.update({"closed": True, "closed_at": now.isoformat(), "closed_by": str(session.user_id),
+                "close_source": "tester", "stack": []})
+            previous.pop("survey", None)
+        else:
+            previous.update({"feedback_submitted": True, "csat_rating": body.rating, "feedback_submitted_at": now.isoformat()})
+            previous.pop("feedback_request", None)
+        previous[lifecycle_key] = {"status": "running"}
+        conversation.workflow_state = deepcopy(previous); db.commit()
+        conversation = lock_conversation(db, conversation.id)
+        previous = deepcopy(conversation.workflow_state)
     pending = previous.get("survey")
     if body.event in {"message_received", "attachment_received"}:
         if body.survey_answer_token and previous.get("workflow_revision") != document.revision:
@@ -81,6 +156,7 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
             raise HTTPException(409, "There is no active survey question for this answer.")
     event_context = body.model_dump(mode="json")
     event_context["conversation_id"] = str(conversation.id)
+    if pending_feedback: event_context["language"] = pending_feedback.get("language") or previous.get("language")
     file_metadata = []
     if upload_payloads is not None:
         survey_node = next((node for node in walk(document.nodes) if node["id"] == (pending or {}).get("node_id")), None)
@@ -111,8 +187,72 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
             raise HTTPException(429, "Too many model requests. Wait a minute and try again.")
 
     matching = request.app.state.intent_matcher.session(document, agent, history, reserve_llm_request)
-    state, output, trace, matched = runtime.execute(document, agent, previous, event_context, matching)
-    if body.event == "message_received":
+    processing = LLMProcessingService(db, agent, request.app.state.settings, request.app.state.llm_processing_client, reserve_llm_request)
+
+    def execute_state(value, continuation=None):
+        return runtime.execute(document, agent, value, event_context, matching,
+            api_client=request.app.state.send_api_client,
+            sql_client=SQLQueryService(db, workspace_id, request.app.state.settings, request.app.state.database_client),
+            attachment_store=AttachmentStore(db, workspace_id, agent_id, conversation.id), continuation=continuation, llm_client=processing)
+
+    committed_messages, committed_trace = [], []
+    input_saved = False
+    try:
+        if pending_feedback:
+            state = deepcopy(previous)
+            context = ActionContext(agent=agent, language=event_context["language"], event=event_context, state=state)
+            try: state["feedback_confirmation"] = render(pending_feedback.get("submission_template", DEFAULT_SUBMISSION), context)
+            except ScriptError as error: raise HTTPException(422, str(error)) from None
+            output, trace = [], []
+            if "continuation" in pending_feedback:
+                if pending_feedback.get("workflow_revision") != document.revision:
+                    raise HTTPException(422, "Feedback saved. Workflows changed after this request; its remaining actions were not run. Restart to test the updated flow.")
+                state, output, trace, _ = execute_state(state, pending_feedback["continuation"])
+                state["close_automation"] = {"status": "completed"}
+            state, followup, followup_trace, matched = execute_state(state)
+            output.extend(followup); trace.extend(followup_trace)
+            trace.insert(0, {"node_id": pending_feedback.get("node_id"), "node_number": pending_feedback.get("node_number"),
+                "name": "Feedback submitted", "type": "collect_feedback", "outcome": "feedback_saved"})
+        else:
+            state, output, trace, matched = execute_state(previous)
+        close_request = state.pop("close_requested", None)
+        if close_request:
+            # A workflow closure is durable before its post-close automation.
+            # Persist the incoming turn and any earlier messages/files once.
+            store_input(db, conversation, body, file_metadata); input_saved = True
+            committed_messages = store_output(db, conversation, output)
+            committed_trace = trace
+            state.update({"closed": True, "closed_at": utcnow().isoformat(), "closed_by": str(session.user_id),
+                "close_source": "workflow", "close_action": close_request, "close_automation": {"status": "running"}, "stack": []})
+            state.pop("survey", None)
+            conversation.workflow_state = deepcopy(state); db.commit()
+            conversation = lock_conversation(db, conversation.id)
+            previous = deepcopy(conversation.workflow_state)
+            lifecycle_key = "close_automation"
+            closed_event = {"event": "chat_closed", "conversation_id": str(conversation.id), "language": previous["language"]}
+            close_matching = request.app.state.intent_matcher.session(document, agent)
+            state, output, close_trace, _ = runtime.execute(document, agent, previous, closed_event, close_matching,
+                api_client=request.app.state.send_api_client,
+                sql_client=SQLQueryService(db, workspace_id, request.app.state.settings, request.app.state.database_client),
+                attachment_store=AttachmentStore(db, workspace_id, agent_id, conversation.id), llm_client=processing)
+            trace = committed_trace + close_trace; matched = True
+    except HTTPException as error:
+        if not lifecycle_key: raise
+        db.rollback()
+        conversation = lock_conversation(db, conversation.id)
+        state = deepcopy(conversation.workflow_state)
+        state[lifecycle_key] = {"status": "failed", "error": str(error.detail)}
+        if pending_feedback and "continuation" in pending_feedback: state["close_automation"] = {"status": "failed"}
+        state["stack"] = []; state.pop("survey", None)
+        conversation.workflow_state = state; db.commit()
+        close_failed = lifecycle_key == "close_automation"
+        trace = committed_trace + [{"node_id": None, "node_number": None, "name": "Chat closed" if close_failed else "Feedback received",
+            "type": "chat_closed" if close_failed else body.event, "outcome": "automation_failed", "error": str(error.detail)}]
+        return result_payload(document, conversation, state, committed_messages, trace, matching, True, file_metadata,
+            notice="Chat closed. Post-conversation automation could not finish." if close_failed else "Feedback saved. Follow-up automation could not finish.")
+    if lifecycle_key:
+        state[lifecycle_key] = {"status": "waiting_feedback" if lifecycle_key == "close_automation" and state.get("feedback_request") else "completed"}
+    if body.event == "message_received" and not input_saved:
         if not matched and agent.llm_enabled and request.app.state.llm_tester.available:
             reserve_llm_request()
             recent = db.scalars(select(AgentMessage).where(AgentMessage.conversation_id == conversation.id)
@@ -120,36 +260,21 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
             history = [{"role": item.role, "content": item.content} for item in reversed(recent)]
             history.append({"role": "user", "content": body.content})
             # Keep nested-trigger context if a provider fails; the whole turn rolls back.
-            content = request.app.state.llm_tester.reply(agent, history)
+            content = request.app.state.llm_tester.reply(agent, history, language=state["language"])
             output.append({"content": content, "quick_replies": [], "source": "llm", "node_id": None})
             trace.append({"node_id": None, "node_number": None, "name": "Generative reply", "type": "llm", "outcome": "executed"})
-        db.add(AgentMessage(conversation_id=conversation.id, role="user", content=body.content))
-    elif body.event == "attachment_received":
-        db.add(AgentMessage(conversation_id=conversation.id, role="user",
-            content="Uploaded: " + ", ".join(file["name"] for file in file_metadata) if file_metadata else "Attachment test: " + body.attachment.name,
-            message_data={"event": body.event, "attachment": body.attachment.model_dump(), "attachments": file_metadata}))
+    if not input_saved: store_input(db, conversation, body, file_metadata)
     if body.event in {"chat_closed", "chat_timeout"}:
         state["closed"] = True
     if body.event == "collect_feedback":
         state["feedback_submitted"] = True
         state["csat_rating"] = body.rating
+        state.pop("feedback_request", None)
     conversation.workflow_state = state
-    messages = []
-    for result in output:
-        message = AgentMessage(conversation_id=conversation.id, role="assistant", content=result["content"],
-            message_data={key: value for key, value in result.items() if key != "content"})
-        db.add(message)
-        db.flush()
-        messages.append({"id": str(message.id), "role": message.role, "content": message.content,
-            "created_at": message.created_at.isoformat(), **message.message_data})
+    messages = committed_messages + store_output(db, conversation, output)
     db.commit()
-    active_node = next((node for node in walk(document.nodes) if node["id"] == state.get("survey", {}).get("node_id")), None)
-    return {"conversation_id": str(conversation.id), "messages": messages, "trace": trace,
-        "workflow_revision": document.revision, "language": state["language"], "closed": bool(state.get("closed")),
-        "feedback_submitted": bool(state.get("feedback_submitted")), "waiting": bool(state["stack"]) or bool(state.get("survey")), "variables": state.get("variables", {}),
-        "survey": survey.status(active_node, state) if active_node else None, "attachments": file_metadata,
-        "matching": matching.report,
-        "notice": "" if output or matched else "No workflow matched this event. Add a matching trigger or enable a fallback."}
+    return result_payload(document, conversation, state, messages, trace, matching, matched or body.event == "collect_feedback", file_metadata,
+        notice="Feedback saved." if body.event == "collect_feedback" and not output else None)
 
 
 @router.post("/tester/attachments")
@@ -165,17 +290,16 @@ async def upload_survey_answer(workspace_id: uuid.UUID, agent_id: uuid.UUID, req
     payloads = await attachments.read_uploads(files)
     body = TesterEvent(event="attachment_received", conversation_id=conversation_id, language=language,
         survey_answer_token=survey_answer_token, attachment={"name": payloads[0]["file_name"], "media_type": "file"})
-    return process_event(workspace_id, agent_id, body, request, db, upload_payloads=payloads)
+    return await run_in_threadpool(process_event, workspace_id, agent_id, body, request, db, upload_payloads=payloads)
 
 
 @router.get("/tester/attachments/{attachment_id}")
 def download_survey_answer(workspace_id: uuid.UUID, agent_id: uuid.UUID, attachment_id: uuid.UUID,
-    request: Request, db: Session = Depends(get_db)):
+    request: Request, inline: bool = False, db: Session = Depends(get_db)):
     session, _, _, _ = access(request, db, workspace_id, agent_id=agent_id)
     file = db.scalar(select(AgentAttachment).join(AgentConversation).where(AgentAttachment.id == attachment_id,
         AgentConversation.agent_id == agent_id, AgentConversation.workspace_id == workspace_id,
         AgentConversation.user_id == session.user_id))
     if not file:
         raise HTTPException(404, "Attachment not found.")
-    return Response(file.data, media_type="application/octet-stream", headers={"Cache-Control": "private, no-store",
-        "Content-Disposition": "attachment; filename=\"attachment\"; filename*=UTF-8''" + quote(file.file_name, safe="")})
+    return file_response(file, request, inline=inline)
