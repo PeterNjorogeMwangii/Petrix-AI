@@ -115,7 +115,7 @@ def test_migration_preserves_custom_fields_chats_and_workflows(database_engine):
             connection.commit()
             with connection.begin(): command.upgrade(config, 'head')
             with connection.begin(): command.upgrade(config, 'head')
-            assert connection.execute(text('SELECT version_num FROM alembic_version')).scalar() == '0011'
+            assert connection.execute(text('SELECT version_num FROM alembic_version')).scalar() == '0012'
             assert connection.execute(text('SELECT name,revision FROM conversation_fields WHERE id=:id'), {'id':field}).one() == ('Enquiry',4)
             assert connection.execute(text('SELECT count(*) FROM support_teams')).scalar() == 0
             connection.commit()

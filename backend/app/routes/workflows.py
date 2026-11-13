@@ -23,6 +23,7 @@ from app.workflows.actions.llm_processing.service import LLMProcessingService
 from app.workflows.actions.auto_fill_field.service import AutoFillService
 from app.teams.service import TeamMatcher
 from app.inbox import service as live
+from app.external_handoff import service as external
 from app.auth_service import require_csrf
 from app import agent_service
 from app.custom_fields import service as custom_fields
@@ -78,7 +79,7 @@ def result_payload(document, conversation, state, messages, trace, matching, mat
         "variables": state.get("variables", {}), "custom_fields": conversation.custom_fields or {}, "survey": survey.status(active_node, state) if active_node else None,
         "feedback": {**public_feedback(feedback), "min_rating": 1, "max_rating": 5} if feedback else None,
         "feedback_confirmation": state.get("feedback_confirmation"), "channel": state.get("channel", "webchat"),
-        "automation_error": automation_error, "closed_at": state.get("closed_at"), "close_source": state.get("close_source"), "csat_rating": state.get("csat_rating"),
+        "external_handoff": state.get("external_handoff"), "automation_error": automation_error, "closed_at": state.get("closed_at"), "close_source": state.get("close_source"), "csat_rating": state.get("csat_rating"),
         "attachments": file_metadata or [], "matching": matching.report if matching else None, "live_chat": live.public_status(conversation),
         "notice": notice if notice is not None else "" if messages or matched else "No workflow matched this event. Add a matching trigger or enable a fallback."}
 
@@ -137,6 +138,9 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
             agent_name=agent.name, workflow_state={})
         db.add(conversation)
         db.flush()
+    external_binding=db.get(external.ExternalConversation,conversation.id)
+    if external_binding and external_binding.status in external.BLOCKED:
+        raise HTTPException(409, 'This conversation has left Petrix AI processing. Continue in the external platform; unconfirmed transfers require review.')
     if inbox_actor:
         live.require_assignee(conversation,session.user_id,inbox_revision)
     elif conversation.live_status in {'pending','active'}:
@@ -230,12 +234,13 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
     auto_fill = AutoFillService(db, workspace_id, conversation.id, processing)
     team_match = TeamMatcher(db, workspace_id)
     handoff = live.HandoffService(db, workspace_id)
+    external_handoff=external.HandoffService(db,conversation,request.app.state.settings,request.app.state.external_handoff_client)
 
     def execute_state(value, continuation=None):
         return runtime.execute(document, agent, value, event_context, matching,
             api_client=request.app.state.send_api_client,
             sql_client=SQLQueryService(db, workspace_id, request.app.state.settings, request.app.state.database_client),
-            attachment_store=AttachmentStore(db, workspace_id, agent_id, conversation.id), continuation=continuation, llm_client=processing, auto_fill_client=auto_fill, team_match_client=team_match, handoff_client=handoff)
+            attachment_store=AttachmentStore(db, workspace_id, agent_id, conversation.id), continuation=continuation, llm_client=processing, auto_fill_client=auto_fill, team_match_client=team_match, handoff_client=handoff, external_handoff_client=external_handoff)
 
     committed_messages, committed_trace = [], []
     input_saved = False
@@ -272,7 +277,7 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
                 api_client=request.app.state.send_api_client,
                 sql_client=SQLQueryService(db,workspace_id,request.app.state.settings,request.app.state.database_client),
                 attachment_store=AttachmentStore(db,workspace_id,agent_id,conversation.id),llm_client=processing,auto_fill_client=auto_fill,
-                team_match_client=team_match,handoff_client=handoff,continuation=conversation.live_context['continuation'],resume_mode='handoff')
+                team_match_client=team_match,handoff_client=handoff,external_handoff_client=external_handoff,continuation=conversation.live_context['continuation'],resume_mode='handoff')
             trace=committed_trace+return_trace;document=frozen
             conversation.live_context={**conversation.live_context,'return_status':'returned','resume_active':bool(state.get('stack') or state.get('survey'))}
         close_request = state.pop("close_requested", None)
@@ -295,7 +300,7 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
             state, output, close_trace, _ = runtime.execute(document, agent, previous, closed_event, close_matching,
                 api_client=request.app.state.send_api_client,
                 sql_client=SQLQueryService(db, workspace_id, request.app.state.settings, request.app.state.database_client),
-                attachment_store=AttachmentStore(db, workspace_id, agent_id, conversation.id), llm_client=processing, auto_fill_client=auto_fill, team_match_client=team_match, handoff_client=handoff)
+                attachment_store=AttachmentStore(db, workspace_id, agent_id, conversation.id), llm_client=processing, auto_fill_client=auto_fill, team_match_client=team_match, handoff_client=handoff, external_handoff_client=external_handoff)
             trace = committed_trace + close_trace; matched = True
     except HTTPException as error:
         if not lifecycle_key: raise
@@ -335,6 +340,19 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
         state["csat_rating"] = body.rating
         state.pop("feedback_request", None)
     conversation.custom_fields = deepcopy(state.get("custom_fields", conversation.custom_fields or {}))
+    external_request=state.pop('external_handoff_request',None)
+    if external_request:
+        # Terminal transfer: persist the incoming turn and already-generated output
+        # before dispatch. No Chat Closed/feedback or following workflow action runs.
+        messages=committed_messages+store_output(db,conversation,output)
+        outcome=external_handoff.dispatch(state,session.user_id)
+        state['external_handoff']=external.public_status(db,conversation)
+        conversation.workflow_state=deepcopy(state);db.commit()
+        trace=[{**entry,'outcome':outcome.status} if entry.get('type')=='external_handoff' else entry for entry in trace]
+        return result_payload(document,conversation,state,messages,trace,matching,True,file_metadata,
+            notice='Conversation transferred. Continue in '+external.PLATFORMS[external_request['platform']]+'.' if outcome.status=='transferred' else
+                'The provider rejected the transfer. This chat remains with Petrix AI.' if outcome.status=='failed' else
+                'Transfer confirmation is unavailable. AI processing is paused; check the external platform before reviewing the outcome.')
     live.apply_handoff(db,conversation,state)
     if conversation.live_status=='closed' and conversation.live_context.get('resume_active') and not state.get('stack') and not state.get('survey'):
         conversation.live_context={**conversation.live_context,'resume_active':False}

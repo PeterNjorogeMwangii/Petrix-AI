@@ -11,7 +11,8 @@ from app.core.config import Settings
 from app.database import create_database
 from app.mailer import SMTPMailer
 from app.oauth import create_oauth
-from app.routes import agents, auth, custom_fields, database_connections, knowledge, workflow_assets, workflows, workspaces, teams, inbox
+from app.routes import agents, auth, custom_fields, database_connections, knowledge, workflow_assets, workflows, workspaces, teams, inbox, external_integrations
+from app.external_handoff.client import ProviderClient
 from app.database_connections.client import DatabaseClient
 from app.llm_tester import LLMTester
 from app.workflows.matching.router import IntentMatcher
@@ -28,7 +29,7 @@ def create_app(settings: Optional[Settings] = None, mailer=None) -> FastAPI:
         yield
         engine.dispose()
 
-    application = FastAPI(title="Petrix AI", version="0.19.0", description="Live Agent Handoff with authenticated Inbox, team members, expiring availability and saved AI return paths, Send Graph with seven interactive chart types and CSV/PNG exports, Auto Team Match and workspace Teams settings, Auto Fill Field and conversation Custom Fields settings, LLM Processing with Groq and agent-owned Knowledge text sources, AI agents, workflows, Close Chat actions and permanent Chat Closed automation and localised rating/survey feedback with saved variables and continuation, localised file attachments and interactive carousels, surveys, conversation language switching, read-only SQL queries, verified database connections, HTTPS API requests, conditional Branch paths, Jump redirects, session variables, and layered intent matching.", lifespan=lifespan)
+    application = FastAPI(title="Petrix AI", version="0.20.0", description="Permanent External Handoff for verified native Zendesk/Bitrix24 integrations, read-only external history, and durable transfer review. Live Agent Handoff with authenticated Inbox, team members, expiring availability and saved AI return paths, Send Graph with seven interactive chart types and CSV/PNG exports, Auto Team Match and workspace Teams settings, Auto Fill Field and conversation Custom Fields settings, LLM Processing with Groq and agent-owned Knowledge text sources, AI agents, workflows, Close Chat actions and permanent Chat Closed automation and localised rating/survey feedback with saved variables and continuation, localised file attachments and interactive carousels, surveys, conversation language switching, read-only SQL queries, verified database connections, HTTPS API requests, conditional Branch paths, Jump redirects, session variables, and layered intent matching.", lifespan=lifespan)
     application.state.settings = settings
     application.state.engine = engine
     application.state.session_factory = session_factory
@@ -39,6 +40,7 @@ def create_app(settings: Optional[Settings] = None, mailer=None) -> FastAPI:
     application.state.llm_processing_client = GroqProcessingClient(settings)
     application.state.send_api_client = SendAPIClient(settings.send_api_allowed_private_hosts.split(",") if settings.send_api_allowed_private_hosts else ())
     application.state.database_client = DatabaseClient()
+    application.state.external_handoff_client = ProviderClient(application.state.send_api_client)
     application.add_middleware(CORSMiddleware, allow_origins=[settings.frontend_origin], allow_credentials=True, allow_methods=["GET", "POST"], allow_headers=["Content-Type", "X-Petrix-CSRF"])
     application.add_middleware(SessionMiddleware, secret_key=settings.session_signing_secret.get_secret_value(), session_cookie="petrix_oauth", max_age=600, same_site="lax", https_only=settings.secure_cookies)
 
@@ -75,6 +77,7 @@ def create_app(settings: Optional[Settings] = None, mailer=None) -> FastAPI:
     application.include_router(custom_fields.router)
     application.include_router(teams.router)
     application.include_router(inbox.router)
+    application.include_router(external_integrations.router)
     application.include_router(workflows.router)
     application.include_router(workflow_assets.router)
     return application

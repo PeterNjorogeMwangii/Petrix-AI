@@ -36,6 +36,7 @@ class ActionContext:
     team_match_client: object = None
     graph_calls: int = 0
     handoff_client: object = None
+    external_handoff_client: object = None
 
     @property
     def variables(self):

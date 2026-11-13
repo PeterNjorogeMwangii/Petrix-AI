@@ -130,6 +130,12 @@ def apply_handoff(db,conversation,state):
 
 def can_view(db,conversation,user_id):
     if not db.scalar(select(Membership.id).where(Membership.workspace_id==conversation.workspace_id,Membership.user_id==user_id)):return False
+    from app.models import ExternalConversation
+    external=db.get(ExternalConversation,conversation.id)
+    if external and external.status in {'sending','transferred','uncertain'}:
+        from app import agent_service
+        role=db.scalar(select(Membership.role).where(Membership.workspace_id==conversation.workspace_id,Membership.user_id==user_id))
+        return conversation.user_id==user_id or conversation.live_assigned_user_id==user_id or agent_service.can_manage(db,conversation.workspace_id,role)
     if conversation.live_status in {'active','closed'}:return conversation.live_assigned_user_id==user_id
     if conversation.live_status=='pending':return str(user_id) in {p['id'] for p in eligible(db,conversation.workspace_id,conversation.live_context['routing'])}
     return False
@@ -162,6 +168,10 @@ def messages(db,conversation,before=None):
 
 
 def summary(conversation):
+    external=conversation.workflow_state.get('external_handoff')
+    if external and external.get('status') in {'sending','transferred','uncertain'}:
+        return {'id':str(conversation.id),'agent_id':str(conversation.agent_id) if conversation.agent_id else None,'agent_name':conversation.agent_name,'language':conversation.workflow_state.get('language','en'),
+            'created_at':conversation.created_at.isoformat(),'updated_at':external['updated_at'],'status':'external','revision':external['revision'],'assigned_user_id':None,'external_handoff':external}
     return {'id':str(conversation.id),'agent_id':str(conversation.agent_id) if conversation.agent_id else None,'agent_name':conversation.agent_name,
         'created_at':conversation.created_at.isoformat(),'language':conversation.workflow_state.get('language','en'),**public_status(conversation)}
 

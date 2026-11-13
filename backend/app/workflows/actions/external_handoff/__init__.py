@@ -1,2 +1,1 @@
-"""Reserved action module; configuration and execution will be added later."""
-DEFINITION = {"type":"external_handoff","name":"External handoff","group":"Handoffs","description":"Transfer to a connected support platform.","available": False}
+DEFINITION = {"type":"external_handoff","name":"External handoff","group":"Handoffs","description":"Permanently transfer to a verified Zendesk or Bitrix24 integration.","available": True}

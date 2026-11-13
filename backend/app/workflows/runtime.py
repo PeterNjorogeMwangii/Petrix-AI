@@ -14,6 +14,7 @@ from app.workflows.actions.llm_processing.handler import LLMOutcome
 from app.workflows.actions.auto_fill_field.handler import AutoFillOutcome
 from app.workflows.actions.auto_team_match.handler import TeamMatchOutcome
 from app.workflows.actions.send_graph.handler import GraphSkipped
+from app.workflows.actions.external_handoff.handler import ExternalHandoff
 from app.workflows.actions.live_agent_handoff.handler import HandoffWait, HandoffUnavailable
 from app.workflows.post_close import POST_CLOSE_ACTIONS, PostCloseFlow
 from app.workflows.actions.registry import ACTIONS, handler_for
@@ -50,7 +51,7 @@ def choose_trigger(nodes, event, agent, language):
     return best or (fallback if event["event"] in {"message_received", "attachment_received"} else None)
 
 
-def execute(document, agent, state, event, matching=None, api_client=None, sql_client=None, attachment_store=None, continuation=None, llm_client=None, auto_fill_client=None, team_match_client=None, handoff_client=None, resume_mode="post_close"):
+def execute(document, agent, state, event, matching=None, api_client=None, sql_client=None, attachment_store=None, continuation=None, llm_client=None, auto_fill_client=None, team_match_client=None, handoff_client=None, external_handoff_client=None, resume_mode="post_close"):
     index, entries, enabled = {}, {}, {}
 
     def collect(nodes, continuation=None, ancestors_enabled=True):
@@ -86,7 +87,7 @@ def execute(document, agent, state, event, matching=None, api_client=None, sql_c
     if language not in agent.languages:
         language = agent.default_language
     state["language"] = language
-    context = ActionContext(agent=agent, language=language, event=event, state=state, api_client=api_client, sql_client=sql_client, attachment_store=attachment_store, llm_client=llm_client, auto_fill_client=auto_fill_client, team_match_client=team_match_client, handoff_client=handoff_client)
+    context = ActionContext(agent=agent, language=language, event=event, state=state, api_client=api_client, sql_client=sql_client, attachment_store=attachment_store, llm_client=llm_client, auto_fill_client=auto_fill_client, team_match_client=team_match_client, handoff_client=handoff_client, external_handoff_client=external_handoff_client)
     same_revision = state.get("workflow_revision") == document.revision
     stack = deepcopy(continuation) if resuming_feedback else [list(frame) for frame in state.get("stack", [])] if same_revision else []
     trace, output = [], []
@@ -181,6 +182,11 @@ def execute(document, agent, state, event, matching=None, api_client=None, sql_c
                     trace.append({'node_id':node['id'],'node_number':node['number'],'name':node['name'],
                         'type':'live_agent_handoff','outcome':'unavailable','reason':result.reason})
                     stack.append([child['id'] for child in path['children']]);continue
+                if isinstance(result, ExternalHandoff):
+                    state['external_handoff_request'] = {'platform': result.platform, 'node_id': node['id'], 'node_number': node['number']}
+                    trace.append({'node_id':node['id'],'node_number':node['number'],'name':node['name'],'type':'external_handoff','outcome':'transfer_requested'})
+                    state.pop('survey', None); stack=[]
+                    return finish(True)
                 if isinstance(result, HandoffWait):
                     path = next((p for p in node['paths'] if p['id']==node['config']['closed_path_id']), None)
                     if path is None: raise ScriptError('The closed handoff path is missing.')

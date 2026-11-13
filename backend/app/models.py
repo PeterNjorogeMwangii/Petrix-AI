@@ -329,3 +329,34 @@ class WorkflowAsset(Base):
     size_bytes: Mapped[int] = mapped_column(Integer)
     data: Mapped[bytes] = mapped_column(LargeBinary)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ExternalIntegration(Base):
+    __tablename__ = 'external_integrations'
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('workspaces.id', ondelete='CASCADE'))
+    platform: Mapped[str] = mapped_column(String(16))
+    config: Mapped[dict] = mapped_column(JSON)
+    credentials_ciphertext: Mapped[str] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    __table_args__ = (UniqueConstraint('workspace_id','platform',name='uq_external_workspace_platform'),
+        CheckConstraint("platform IN ('zendesk','bitrix24') AND revision >= 1",name='ck_external_integration'))
+
+
+class ExternalConversation(Base):
+    __tablename__ = 'external_conversations'
+    conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('agent_conversations.id', ondelete='CASCADE'), primary_key=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('workspaces.id', ondelete='CASCADE'))
+    platform: Mapped[str] = mapped_column(String(16))
+    external_id: Mapped[str] = mapped_column(String(100))
+    account_key: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), default='linked')
+    error: Mapped[str] = mapped_column(String(64), default='')
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    attempt_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    __table_args__ = (UniqueConstraint('workspace_id','platform','account_key','external_id',name='uq_external_provider_conversation'),
+        CheckConstraint("platform IN ('zendesk','bitrix24') AND status IN ('linked','sending','transferred','failed','uncertain') AND revision >= 1",name='ck_external_conversation'),
+        Index('ix_external_workspace_status','workspace_id','status'))

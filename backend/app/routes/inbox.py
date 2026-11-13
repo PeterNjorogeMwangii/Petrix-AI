@@ -9,7 +9,7 @@ from app.auth_service import current_session, require_csrf, user_context, worksp
 from app.database import get_db
 from app.inbox import service
 from app.inbox.schemas import AssignmentUpdate, ChatMutation, ChatReply, MemberAdd, ProfileUpdate
-from app.models import AgentConversation, Membership, SupportTeam, User, Workspace
+from app.models import ExternalConversation, AgentConversation, Membership, SupportTeam, User, Workspace
 from app.workflows.schemas import TesterEvent
 
 router=APIRouter(prefix='/api',tags=['Inbox'])
@@ -101,11 +101,12 @@ def heartbeat(workspace_id:uuid.UUID,request:Request,db:Session=Depends(get_db))
 def list_chats(workspace_id:uuid.UUID,request:Request,db:Session=Depends(get_db)):
     session,_,_=access(request,db,workspace_id)
     # Bound the initial queue page, exposing only conversations this person may handle.
+    external_ids=select(ExternalConversation.conversation_id).where(ExternalConversation.workspace_id==workspace_id,ExternalConversation.status.in_(['sending','transferred','uncertain']))
     conversations=db.scalars(select(AgentConversation).where(AgentConversation.workspace_id==workspace_id,
-        AgentConversation.live_status.in_(['pending','active','closed']),
-        (AgentConversation.live_status=='pending') | (AgentConversation.live_assigned_user_id==session.user_id)).order_by(AgentConversation.live_updated_at.desc(),AgentConversation.id.desc()).limit(500)).all()
+        ((AgentConversation.live_status.in_(['pending','active','closed'])) & ((AgentConversation.live_status=='pending') | (AgentConversation.live_assigned_user_id==session.user_id))) | AgentConversation.id.in_(external_ids)).order_by(AgentConversation.live_updated_at.desc(),AgentConversation.id.desc()).limit(500)).all()
     people=service.roster(db,workspace_id);cache={};visible=[]
     for conversation in conversations:
+        if conversation.workflow_state.get('external_handoff',{}).get('status') in {'sending','transferred','uncertain'} and not service.can_view(db,conversation,session.user_id):continue
         if conversation.live_status=='pending':
             routing=conversation.live_context['routing'];key=json.dumps(routing,sort_keys=True)
             if key not in cache:cache[key]={person['id'] for person in service.eligible(db,workspace_id,routing,people=people)}
