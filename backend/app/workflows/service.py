@@ -88,7 +88,7 @@ def validate_nodes(nodes, agent_id):
                         raise HTTPException(422, "This action will be configured in a later milestone.")
                     node["config"] = config_for(node["type"]).model_validate(node["config"]).model_dump(mode="json")
             except ValidationError as error:
-                if node["type"] in {"set_variable", "jump", "ask_survey", "branch", "send_api", "sql_query", "switch_language", "send_attachment", "show_carousel", "collect_feedback", "close_chat", "llm_processing"}:
+                if node["type"] in {"set_variable", "jump", "ask_survey", "branch", "send_api", "sql_query", "switch_language", "send_attachment", "show_carousel", "collect_feedback", "close_chat", "llm_processing", "auto_fill_field"}:
                     issue = error.errors(include_url=False, include_context=False, include_input=False)[0]
                     field = ".".join(map(str, issue["loc"]))
                     location = ", " + field if field else ""
@@ -110,7 +110,7 @@ def validate_nodes(nodes, agent_id):
                     visit(path["children"], depth + 1)
             else:
                 if node.get("paths"):
-                    raise HTTPException(422, "Only Branch, Send API, SQL Query, and LLM Processing actions can contain outcome paths.")
+                    raise HTTPException(422, "Only Branch, Send API, SQL Query, LLM Processing, and Auto Fill Field actions can contain outcome paths.")
                 # Keep older workflow documents byte-for-byte stable on no-op saves.
                 node.pop("paths", None)
                 visit(node["children"], depth + 1)
@@ -152,6 +152,8 @@ def save(db, agent, actor_id, body):
     if document.revision != body.expected_revision:
         raise HTTPException(409, "Workflows changed in another session. Reload workflows before saving.")
     nodes = validate_nodes([node.model_dump(mode="json") for node in body.nodes], agent.id)
+    from app.custom_fields.service import validate_references as validate_field_references
+    validate_field_references(db, agent.workspace_id, nodes)
     from app.database_connections.service import validate_references
     validate_references(db, agent.workspace_id, nodes)
     from app.workflows.actions.switch_language.validation import validate_targets

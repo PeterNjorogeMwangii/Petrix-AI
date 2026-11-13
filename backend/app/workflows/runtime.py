@@ -11,6 +11,7 @@ from app.workflows.actions.jump.handler import JumpTo
 from app.workflows.actions.collect_feedback.handler import FeedbackRequest
 from app.workflows.actions.close_chat.handler import CloseChat
 from app.workflows.actions.llm_processing.handler import LLMOutcome
+from app.workflows.actions.auto_fill_field.handler import AutoFillOutcome
 from app.workflows.post_close import POST_CLOSE_ACTIONS, PostCloseFlow
 from app.workflows.actions.registry import ACTIONS, handler_for
 from app.workflows.chat_script import ScriptError
@@ -46,7 +47,7 @@ def choose_trigger(nodes, event, agent, language):
     return best or (fallback if event["event"] in {"message_received", "attachment_received"} else None)
 
 
-def execute(document, agent, state, event, matching=None, api_client=None, sql_client=None, attachment_store=None, continuation=None, llm_client=None):
+def execute(document, agent, state, event, matching=None, api_client=None, sql_client=None, attachment_store=None, continuation=None, llm_client=None, auto_fill_client=None):
     index, entries, enabled = {}, {}, {}
 
     def collect(nodes, continuation=None, ancestors_enabled=True):
@@ -82,7 +83,7 @@ def execute(document, agent, state, event, matching=None, api_client=None, sql_c
     if language not in agent.languages:
         language = agent.default_language
     state["language"] = language
-    context = ActionContext(agent=agent, language=language, event=event, state=state, api_client=api_client, sql_client=sql_client, attachment_store=attachment_store, llm_client=llm_client)
+    context = ActionContext(agent=agent, language=language, event=event, state=state, api_client=api_client, sql_client=sql_client, attachment_store=attachment_store, llm_client=llm_client, auto_fill_client=auto_fill_client)
     same_revision = state.get("workflow_revision") == document.revision
     stack = deepcopy(continuation) if resuming_feedback else [list(frame) for frame in state.get("stack", [])] if same_revision else []
     trace, output = [], []
@@ -190,12 +191,14 @@ def execute(document, agent, state, event, matching=None, api_client=None, sql_c
                     trace.append({"node_id": node["id"], "node_number": node["number"], "name": node["name"], "type": "collect_feedback", "outcome": "rating_requested" if result.payload["rating_enabled"] else "survey_requested"})
                     stack = []
                     return finish(True)
-                if isinstance(result, (BranchSelect, APIOutcome, QueryOutcome, LLMOutcome)):
+                if isinstance(result, (BranchSelect, APIOutcome, QueryOutcome, LLMOutcome, AutoFillOutcome)):
                     path = next((path for path in node.get("paths", []) if path["id"] == result.path_id), None)
                     if path is None:
                         raise ScriptError("The selected action path is missing. Save the action settings again.")
                     if isinstance(result, BranchSelect):
                         detail = {"outcome": "branched", "condition_name": result.condition_name}
+                    elif isinstance(result, AutoFillOutcome):
+                        detail = {"outcome": result.outcome, "error": result.error, "model": result.model, "assigned_count": result.assigned_count, "unmatched_count": result.unmatched_count}
                     elif isinstance(result, LLMOutcome):
                         detail = {"outcome": result.outcome, "error": result.error, "model": result.model, "knowledge_sources": result.knowledge_sources}
                     elif isinstance(result, QueryOutcome):

@@ -3,6 +3,8 @@ from importlib import import_module
 
 from app.workflows.actions.ask_survey.config import AskSurveyConfig
 from app.workflows.actions.ask_survey.handler import execute as ask_survey
+from app.workflows.actions.auto_fill_field.config import AutoFillFieldConfig
+from app.workflows.actions.auto_fill_field.handler import execute as auto_fill_field
 from app.workflows.actions.branch.config import BranchConfig
 from app.workflows.actions.branch.handler import execute as branch
 from app.workflows.actions.collect_feedback.config import CollectFeedbackConfig
@@ -41,11 +43,11 @@ def config_for(action_type):
     return {"send_message": SendMessageConfig, "send_attachment": SendAttachmentConfig, "show_carousel": ShowCarouselConfig, "set_variable": SetVariableConfig, "jump": JumpConfig,
         "ask_survey": AskSurveyConfig, "branch": BranchConfig, "send_api": SendAPIConfig, "sql_query": SQLQueryConfig,
         "switch_language": SwitchLanguageConfig, "collect_feedback": CollectFeedbackConfig, "close_chat": CloseChatConfig,
-        "llm_processing": LLMProcessingConfig}[action_type]
+        "llm_processing": LLMProcessingConfig, "auto_fill_field": AutoFillFieldConfig}[action_type]
 
 
 def handler_for(action_type):
     return {"send_message": send_message, "send_attachment": send_attachment, "show_carousel": show_carousel, "set_variable": set_variable, "jump": jump,
         "ask_survey": ask_survey, "branch": branch, "send_api": send_api, "sql_query": sql_query,
         "switch_language": switch_language, "collect_feedback": collect_feedback, "close_chat": close_chat,
-        "llm_processing": llm_processing}[action_type]
+        "llm_processing": llm_processing, "auto_fill_field": auto_fill_field}[action_type]

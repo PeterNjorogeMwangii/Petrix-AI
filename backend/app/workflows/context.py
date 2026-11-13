@@ -32,6 +32,7 @@ class ActionContext:
     attachment_calls: int = 0
     carousel_calls: int = 0
     llm_client: object = None
+    auto_fill_client: object = None
 
     @property
     def variables(self):
@@ -43,7 +44,7 @@ class ActionContext:
             "default_language": self.agent.default_language, "language": self.language,
             "conversation_id": str(self.event.get("conversation_id") or ""), "message": self.event.get("content") or "",
             "feedback_rating": self.event.get("rating") if self.event.get("rating") is not None else self.state.get("csat_rating"), "attachment_name": attachment.get("name", ""),
-            "attachment_type": attachment.get("media_type", "")}
+            "attachment_type": attachment.get("media_type", ""), "custom_fields": self.state.get("custom_fields", {})}
 
     def environment(self):
         system = self.system_values()

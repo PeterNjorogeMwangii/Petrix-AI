@@ -178,6 +178,27 @@ class AgentConnection(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class ConversationField(Base):
+    __tablename__ = 'conversation_fields'
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('workspaces.id', ondelete='CASCADE'), index=True)
+    key: Mapped[str] = mapped_column(String(64))
+    scope: Mapped[str] = mapped_column(String(24), default='conversation')
+    type: Mapped[str] = mapped_column(String(32))
+    name: Mapped[str] = mapped_column(String(100))
+    description: Mapped[str] = mapped_column(Text, default='')
+    options: Mapped[list] = mapped_column(JSON, default=list)
+    default_value: Mapped[Optional[object]] = mapped_column(JSON, nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    __table_args__ = (UniqueConstraint('workspace_id','key',name='uq_conversation_field_key'),
+        CheckConstraint("scope = 'conversation'",name='ck_conversation_field_scope'),
+        CheckConstraint("type IN ('text','number','toggle','dropdown','date','single_select_grouped')",name='ck_conversation_field_type'),
+        CheckConstraint('revision >= 1',name='ck_conversation_field_revision'))
+
+
 class AgentConversation(Base):
     __tablename__ = "agent_conversations"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -186,6 +207,7 @@ class AgentConversation(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     agent_name: Mapped[str] = mapped_column(String(100))
     workflow_state: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+    custom_fields: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

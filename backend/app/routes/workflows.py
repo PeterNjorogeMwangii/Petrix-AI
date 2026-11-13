@@ -20,6 +20,8 @@ from app.workflows.actions.ask_survey import handler as survey
 from app.workflows.actions.collect_feedback.config import DEFAULT_SUBMISSION
 from app.workflows.actions.collect_feedback.submission import accept_feedback, public_feedback
 from app.workflows.actions.llm_processing.service import LLMProcessingService
+from app.workflows.actions.auto_fill_field.service import AutoFillService
+from app.custom_fields import service as custom_fields
 from app.workflows.chat_script import ScriptError
 from app.workflows.context import ActionContext
 from app.workflows.templates import render
@@ -58,7 +60,7 @@ def result_payload(document, conversation, state, messages, trace, matching, mat
     return {"conversation_id": str(conversation.id), "messages": messages, "trace": trace,
         "workflow_revision": document.revision, "language": state.get("language", "en"), "closed": bool(state.get("closed")),
         "feedback_submitted": bool(state.get("feedback_submitted")), "waiting": bool(state.get("stack")) or bool(state.get("survey")),
-        "variables": state.get("variables", {}), "survey": survey.status(active_node, state) if active_node else None,
+        "variables": state.get("variables", {}), "custom_fields": conversation.custom_fields or {}, "survey": survey.status(active_node, state) if active_node else None,
         "feedback": {**public_feedback(feedback), "min_rating": 1, "max_rating": 5} if feedback else None,
         "feedback_confirmation": state.get("feedback_confirmation"), "channel": state.get("channel", "webchat"),
         "automation_error": automation_error, "closed_at": state.get("closed_at"), "close_source": state.get("close_source"), "csat_rating": state.get("csat_rating"),
@@ -115,6 +117,7 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
         db.add(conversation)
         db.flush()
     previous = deepcopy(conversation.workflow_state or {})
+    previous["custom_fields"] = custom_fields.with_defaults(db, workspace_id, conversation)
     if body.channel and previous.get("channel") and body.channel != previous["channel"]:
         raise HTTPException(409, "Restart the tester before changing its channel preview.")
     previous.setdefault("channel", body.channel or "webchat")
@@ -142,6 +145,7 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
             previous.update({"feedback_submitted": True, "csat_rating": body.rating, "feedback_submitted_at": now.isoformat()})
             previous.pop("feedback_request", None)
         previous[lifecycle_key] = {"status": "running"}
+        conversation.custom_fields = deepcopy(previous.get("custom_fields", conversation.custom_fields or {}))
         conversation.workflow_state = deepcopy(previous); db.commit()
         conversation = lock_conversation(db, conversation.id)
         previous = deepcopy(conversation.workflow_state)
@@ -189,11 +193,13 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
     matching = request.app.state.intent_matcher.session(document, agent, history, reserve_llm_request)
     processing = LLMProcessingService(db, agent, request.app.state.settings, request.app.state.llm_processing_client, reserve_llm_request)
 
+    auto_fill = AutoFillService(db, workspace_id, conversation.id, processing)
+
     def execute_state(value, continuation=None):
         return runtime.execute(document, agent, value, event_context, matching,
             api_client=request.app.state.send_api_client,
             sql_client=SQLQueryService(db, workspace_id, request.app.state.settings, request.app.state.database_client),
-            attachment_store=AttachmentStore(db, workspace_id, agent_id, conversation.id), continuation=continuation, llm_client=processing)
+            attachment_store=AttachmentStore(db, workspace_id, agent_id, conversation.id), continuation=continuation, llm_client=processing, auto_fill_client=auto_fill)
 
     committed_messages, committed_trace = [], []
     input_saved = False
@@ -225,6 +231,7 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
             state.update({"closed": True, "closed_at": utcnow().isoformat(), "closed_by": str(session.user_id),
                 "close_source": "workflow", "close_action": close_request, "close_automation": {"status": "running"}, "stack": []})
             state.pop("survey", None)
+            conversation.custom_fields = deepcopy(state.get("custom_fields", conversation.custom_fields or {}))
             conversation.workflow_state = deepcopy(state); db.commit()
             conversation = lock_conversation(db, conversation.id)
             previous = deepcopy(conversation.workflow_state)
@@ -234,7 +241,7 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
             state, output, close_trace, _ = runtime.execute(document, agent, previous, closed_event, close_matching,
                 api_client=request.app.state.send_api_client,
                 sql_client=SQLQueryService(db, workspace_id, request.app.state.settings, request.app.state.database_client),
-                attachment_store=AttachmentStore(db, workspace_id, agent_id, conversation.id), llm_client=processing)
+                attachment_store=AttachmentStore(db, workspace_id, agent_id, conversation.id), llm_client=processing, auto_fill_client=auto_fill)
             trace = committed_trace + close_trace; matched = True
     except HTTPException as error:
         if not lifecycle_key: raise
@@ -270,6 +277,7 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
         state["feedback_submitted"] = True
         state["csat_rating"] = body.rating
         state.pop("feedback_request", None)
+    conversation.custom_fields = deepcopy(state.get("custom_fields", conversation.custom_fields or {}))
     conversation.workflow_state = state
     messages = committed_messages + store_output(db, conversation, output)
     db.commit()
