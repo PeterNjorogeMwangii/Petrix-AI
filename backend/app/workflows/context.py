@@ -33,6 +33,9 @@ class ActionContext:
     carousel_calls: int = 0
     llm_client: object = None
     auto_fill_client: object = None
+    team_match_client: object = None
+    graph_calls: int = 0
+    handoff_client: object = None
 
     @property
     def variables(self):

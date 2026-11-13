@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from app.agent_schemas import AgentConfiguration
 from app.core.security import utcnow
-from app.models import Agent, AgentChange, AgentVersion, Membership, RolePermission, Workspace
+from app.models import ChatAssignment, Agent, AgentChange, AgentVersion, Membership, RolePermission, Workspace
 
 MAX_AVATAR_BYTES = 10 * 1024 * 1024
 MAX_IMPORT_BYTES = 15 * 1024 * 1024
@@ -133,6 +133,7 @@ def create_agent(db, workspace, actor_id, name, language="en", avatar=None, conf
 
 
 def initialize_workspace(db, workspace, actor_id):
+    db.add(ChatAssignment(workspace_id=workspace.id,mode="manual",max_active_chats=5,revision=1))
     for role in ("owner", "admin", "member"):
         db.add(RolePermission(workspace_id=workspace.id, role=role, manage_ai_agents=role != "member"))
     create_agent(db, workspace, actor_id, "Default AI Agent")

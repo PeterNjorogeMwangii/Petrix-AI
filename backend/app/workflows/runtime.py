@@ -12,6 +12,9 @@ from app.workflows.actions.collect_feedback.handler import FeedbackRequest
 from app.workflows.actions.close_chat.handler import CloseChat
 from app.workflows.actions.llm_processing.handler import LLMOutcome
 from app.workflows.actions.auto_fill_field.handler import AutoFillOutcome
+from app.workflows.actions.auto_team_match.handler import TeamMatchOutcome
+from app.workflows.actions.send_graph.handler import GraphSkipped
+from app.workflows.actions.live_agent_handoff.handler import HandoffWait, HandoffUnavailable
 from app.workflows.post_close import POST_CLOSE_ACTIONS, PostCloseFlow
 from app.workflows.actions.registry import ACTIONS, handler_for
 from app.workflows.chat_script import ScriptError
@@ -47,7 +50,7 @@ def choose_trigger(nodes, event, agent, language):
     return best or (fallback if event["event"] in {"message_received", "attachment_received"} else None)
 
 
-def execute(document, agent, state, event, matching=None, api_client=None, sql_client=None, attachment_store=None, continuation=None, llm_client=None, auto_fill_client=None):
+def execute(document, agent, state, event, matching=None, api_client=None, sql_client=None, attachment_store=None, continuation=None, llm_client=None, auto_fill_client=None, team_match_client=None, handoff_client=None, resume_mode="post_close"):
     index, entries, enabled = {}, {}, {}
 
     def collect(nodes, continuation=None, ancestors_enabled=True):
@@ -72,7 +75,7 @@ def execute(document, agent, state, event, matching=None, api_client=None, sql_c
     collect(document.nodes)
     state = deepcopy(state)
     resuming_feedback = continuation is not None
-    closing = event["event"] == "chat_closed" or resuming_feedback
+    closing = (event["event"] == "chat_closed" or resuming_feedback) and resume_mode != "handoff"
     close_graph = PostCloseFlow(document.nodes)
     if closing:
         state["closed"] = True
@@ -83,7 +86,7 @@ def execute(document, agent, state, event, matching=None, api_client=None, sql_c
     if language not in agent.languages:
         language = agent.default_language
     state["language"] = language
-    context = ActionContext(agent=agent, language=language, event=event, state=state, api_client=api_client, sql_client=sql_client, attachment_store=attachment_store, llm_client=llm_client, auto_fill_client=auto_fill_client)
+    context = ActionContext(agent=agent, language=language, event=event, state=state, api_client=api_client, sql_client=sql_client, attachment_store=attachment_store, llm_client=llm_client, auto_fill_client=auto_fill_client, team_match_client=team_match_client, handoff_client=handoff_client)
     same_revision = state.get("workflow_revision") == document.revision
     stack = deepcopy(continuation) if resuming_feedback else [list(frame) for frame in state.get("stack", [])] if same_revision else []
     trace, output = [], []
@@ -172,6 +175,28 @@ def execute(document, agent, state, event, matching=None, api_client=None, sql_c
                     raise ScriptError("This action is not ready to execute yet.")
                 previous_language = context.language
                 result = handler_for(node["type"])(node["config"], context)
+                if isinstance(result, HandoffUnavailable):
+                    path = next((p for p in node['paths'] if p['id']==result.path_id), None)
+                    if path is None: raise ScriptError('The unavailable handoff path is missing.')
+                    trace.append({'node_id':node['id'],'node_number':node['number'],'name':node['name'],
+                        'type':'live_agent_handoff','outcome':'unavailable','reason':result.reason})
+                    stack.append([child['id'] for child in path['children']]);continue
+                if isinstance(result, HandoffWait):
+                    path = next((p for p in node['paths'] if p['id']==node['config']['closed_path_id']), None)
+                    if path is None: raise ScriptError('The closed handoff path is missing.')
+                    state['handoff_request']={'node_id':node['id'],'node_number':node['number'],
+                        'workflow_revision':document.revision,'nodes':deepcopy(document.nodes),
+                        'continuation':deepcopy(stack)+[[child['id'] for child in path['children']]],
+                        'routing':result.routing,'eligible_ids':result.eligible_ids,'assigned_id':result.assigned_id}
+                    trace.append({'node_id':node['id'],'node_number':node['number'],'name':node['name'],
+                        'type':'live_agent_handoff','outcome':'assigned' if result.assigned_id else 'queued'})
+                    state.pop('survey',None);stack=[]
+                    return finish(True)
+                if isinstance(result, GraphSkipped):
+                    trace.append({"node_id": node["id"], "node_number": node["number"], "name": node["name"],
+                        "type": "send_graph", "outcome": "skipped", "reason": result.reason})
+                    stack.append([child["id"] for child in node["children"]])
+                    continue
                 if isinstance(result, CloseChat):
                     already_closed = bool(state.get("closed"))
                     trace.append({"node_id": node["id"], "node_number": node["number"], "name": node["name"],
@@ -191,12 +216,14 @@ def execute(document, agent, state, event, matching=None, api_client=None, sql_c
                     trace.append({"node_id": node["id"], "node_number": node["number"], "name": node["name"], "type": "collect_feedback", "outcome": "rating_requested" if result.payload["rating_enabled"] else "survey_requested"})
                     stack = []
                     return finish(True)
-                if isinstance(result, (BranchSelect, APIOutcome, QueryOutcome, LLMOutcome, AutoFillOutcome)):
+                if isinstance(result, (BranchSelect, APIOutcome, QueryOutcome, LLMOutcome, AutoFillOutcome, TeamMatchOutcome)):
                     path = next((path for path in node.get("paths", []) if path["id"] == result.path_id), None)
                     if path is None:
                         raise ScriptError("The selected action path is missing. Save the action settings again.")
                     if isinstance(result, BranchSelect):
                         detail = {"outcome": "branched", "condition_name": result.condition_name}
+                    elif isinstance(result, TeamMatchOutcome):
+                        detail = {"outcome": result.outcome, "error": result.error, "team_name": result.team_name, "match_reason": result.match_reason}
                     elif isinstance(result, AutoFillOutcome):
                         detail = {"outcome": result.outcome, "error": result.error, "model": result.model, "assigned_count": result.assigned_count, "unmatched_count": result.unmatched_count}
                     elif isinstance(result, LLMOutcome):

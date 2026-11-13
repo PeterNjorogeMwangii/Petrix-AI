@@ -27,7 +27,7 @@ def resolve(path, context):
     return value
 
 
-def render(source, context, maximum=4000):
+def render(source, context, maximum=4000, allow_empty=False):
 
     def text(value):
         if value is None: return ""
@@ -44,5 +44,5 @@ def render(source, context, maximum=4000):
     chunks.append(source[position:])
     if size + len(chunks[-1]) > maximum: raise ScriptError("The rendered message or quick reply is too long.")
     result = "".join(chunks)
-    if not result.strip(): raise ScriptError("The rendered message or quick reply is empty.")
+    if not result.strip() and not allow_empty: raise ScriptError("The rendered message or quick reply is empty.")
     return result

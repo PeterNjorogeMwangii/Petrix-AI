@@ -1,2 +1,2 @@
-"""Reserved action module; configuration and execution will be added later."""
-DEFINITION = {"type":"auto_team_match","name":"Auto team match","group":"AI & data","description":"Match a team by its aliases.","available": False}
+"""Identify a support team using its configured names and alternatives."""
+DEFINITION = {"type":"auto_team_match","name":"Auto team match","group":"AI & data","description":"Match a support team by its name or alternative names.","available": True}

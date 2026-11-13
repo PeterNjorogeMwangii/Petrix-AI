@@ -60,7 +60,7 @@ def verify_link(body: VerifyRequest, request: Request, response: Response, db: S
 @router.get("/me")
 def me(request: Request, db: Session = Depends(get_db)):
     session = current_session(request, db)
-    return user_context(db, db.get(User, session.user_id))
+    return user_context(db, db.get(User, session.user_id), session.active_workspace_id)
 
 
 @router.post("/logout", status_code=204)

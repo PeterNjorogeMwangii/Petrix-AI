@@ -11,7 +11,7 @@ from app.core.config import Settings
 from app.database import create_database
 from app.mailer import SMTPMailer
 from app.oauth import create_oauth
-from app.routes import agents, auth, custom_fields, database_connections, knowledge, workflow_assets, workflows, workspaces
+from app.routes import agents, auth, custom_fields, database_connections, knowledge, workflow_assets, workflows, workspaces, teams, inbox
 from app.database_connections.client import DatabaseClient
 from app.llm_tester import LLMTester
 from app.workflows.matching.router import IntentMatcher
@@ -28,7 +28,7 @@ def create_app(settings: Optional[Settings] = None, mailer=None) -> FastAPI:
         yield
         engine.dispose()
 
-    application = FastAPI(title="Petrix AI", version="0.16.0", description="Auto Fill Field and conversation Custom Fields settings, LLM Processing with Groq and agent-owned Knowledge text sources, AI agents, workflows, Close Chat actions and permanent Chat Closed automation and localised rating/survey feedback with saved variables and continuation, localised file attachments and interactive carousels, surveys, conversation language switching, read-only SQL queries, verified database connections, HTTPS API requests, conditional Branch paths, Jump redirects, session variables, and layered intent matching.", lifespan=lifespan)
+    application = FastAPI(title="Petrix AI", version="0.19.0", description="Live Agent Handoff with authenticated Inbox, team members, expiring availability and saved AI return paths, Send Graph with seven interactive chart types and CSV/PNG exports, Auto Team Match and workspace Teams settings, Auto Fill Field and conversation Custom Fields settings, LLM Processing with Groq and agent-owned Knowledge text sources, AI agents, workflows, Close Chat actions and permanent Chat Closed automation and localised rating/survey feedback with saved variables and continuation, localised file attachments and interactive carousels, surveys, conversation language switching, read-only SQL queries, verified database connections, HTTPS API requests, conditional Branch paths, Jump redirects, session variables, and layered intent matching.", lifespan=lifespan)
     application.state.settings = settings
     application.state.engine = engine
     application.state.session_factory = session_factory
@@ -73,6 +73,8 @@ def create_app(settings: Optional[Settings] = None, mailer=None) -> FastAPI:
     application.include_router(database_connections.router)
     application.include_router(knowledge.router)
     application.include_router(custom_fields.router)
+    application.include_router(teams.router)
+    application.include_router(inbox.router)
     application.include_router(workflows.router)
     application.include_router(workflow_assets.router)
     return application

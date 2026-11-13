@@ -52,7 +52,7 @@ def test_defaults_are_saved_once_and_catalogue_is_explicit(client, workflow, app
     assert [root["type"] for root in document["nodes"]] == ["chat_started", "chat_closed", "chat_timeout", "ai_timeout", "fallback"]
     assert document["revision"] == 1
     assert len(document["actions"]) == 20
-    assert [item["type"] for item in document["actions"] if item["available"]] == ["send_message", "send_attachment", "show_carousel", "ask_survey", "collect_feedback", "jump", "branch", "set_variable", "switch_language", "close_chat", "send_api", "llm_processing", "auto_fill_field", "sql_query"]
+    assert [item["type"] for item in document["actions"] if item["available"]] == ["send_message", "send_attachment", "show_carousel", "ask_survey", "live_agent_handoff", "collect_feedback", "jump", "branch", "set_variable", "switch_language", "close_chat", "send_api", "llm_processing", "auto_fill_field", "auto_team_match", "sql_query", "send_graph"]
     greeting = document["nodes"][0]["children"][0]
     assert "{_chatbot.name}" in greeting["config"]["translations"]["en"]["messages"][0]
     assert contents(event(client, path, csrf)) == ["Hi! I’m Default AI Agent. How can I assist you today?"]

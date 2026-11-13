@@ -89,6 +89,7 @@ class AuthSession(Base):
     __tablename__ = "auth_sessions"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    active_workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="SET NULL"))
     session_hash: Mapped[str] = mapped_column(String(64), unique=True)
     csrf_hash: Mapped[str] = mapped_column(String(64))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
@@ -178,6 +179,21 @@ class AgentConnection(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class SupportTeam(Base):
+    __tablename__ = 'support_teams'
+    member_ids: Mapped[list] = mapped_column(JSON, default=list, server_default='[]')
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('workspaces.id', ondelete='CASCADE'), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    description: Mapped[str] = mapped_column(Text, default='')
+    alternative_names: Mapped[list] = mapped_column(JSON, default=list)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    __table_args__ = (CheckConstraint('revision >= 1', name='ck_support_team_revision'),)
+
+
 class ConversationField(Base):
     __tablename__ = 'conversation_fields'
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -199,8 +215,38 @@ class ConversationField(Base):
         CheckConstraint('revision >= 1',name='ck_conversation_field_revision'))
 
 
+class SupportAgent(Base):
+    __tablename__ = 'support_agents'
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('workspaces.id', ondelete='CASCADE'), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), primary_key=True)
+    languages: Mapped[list] = mapped_column(JSON, default=lambda: ['en'])
+    available: Mapped[bool] = mapped_column(Boolean, default=False)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    last_seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_assigned_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    presence_session_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey('auth_sessions.id', ondelete='SET NULL'))
+    __table_args__ = (CheckConstraint('revision >= 1', name='ck_support_agent_revision'),)
+
+
+class ChatAssignment(Base):
+    __tablename__ = 'chat_assignments'
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('workspaces.id', ondelete='CASCADE'), primary_key=True)
+    mode: Mapped[str] = mapped_column(String(24), default='manual')
+    max_active_chats: Mapped[int] = mapped_column(Integer, default=5)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    __table_args__ = (CheckConstraint("mode IN ('manual','round_robin','least_busy')",name='ck_chat_assignment_mode'),
+        CheckConstraint('max_active_chats BETWEEN 1 AND 100 AND revision >= 1',name='ck_chat_assignment_limits'))
+
+
 class AgentConversation(Base):
     __tablename__ = "agent_conversations"
+    live_status: Mapped[str] = mapped_column(String(16), default='none', server_default='none')
+    live_assigned_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey('users.id', ondelete='SET NULL'))
+    live_context: Mapped[dict] = mapped_column(JSON, default=dict, server_default='{}')
+    live_revision: Mapped[int] = mapped_column(Integer, default=1, server_default='1')
+    live_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (CheckConstraint("live_status IN ('none','pending','active','closed') AND live_revision >= 1",name='ck_conversation_live_status'),
+        Index('ix_conversation_live_queue','workspace_id','live_status','live_updated_at'))
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
     agent_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("ai_agents.id", ondelete="SET NULL"), index=True)

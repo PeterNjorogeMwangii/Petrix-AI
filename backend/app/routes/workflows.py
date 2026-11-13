@@ -21,6 +21,10 @@ from app.workflows.actions.collect_feedback.config import DEFAULT_SUBMISSION
 from app.workflows.actions.collect_feedback.submission import accept_feedback, public_feedback
 from app.workflows.actions.llm_processing.service import LLMProcessingService
 from app.workflows.actions.auto_fill_field.service import AutoFillService
+from app.teams.service import TeamMatcher
+from app.inbox import service as live
+from app.auth_service import require_csrf
+from app import agent_service
 from app.custom_fields import service as custom_fields
 from app.workflows.chat_script import ScriptError
 from app.workflows.context import ActionContext
@@ -53,6 +57,17 @@ def tester_event(workspace_id: uuid.UUID, agent_id: uuid.UUID, body: TesterEvent
     return process_event(workspace_id, agent_id, body, request, db)
 
 
+@router.get('/tester/conversations/{conversation_id}')
+def conversation_state(workspace_id:uuid.UUID,agent_id:uuid.UUID,conversation_id:uuid.UUID,request:Request,db:Session=Depends(get_db)):
+    session,_,_,_=access(request,db,workspace_id,agent_id=agent_id)
+    conversation=db.scalar(select(AgentConversation).where(AgentConversation.id==conversation_id,
+        AgentConversation.workspace_id==workspace_id,AgentConversation.agent_id==agent_id,AgentConversation.user_id==session.user_id))
+    if not conversation:raise HTTPException(404,'Conversation not found.')
+    document=live.frozen_document(conversation) if conversation.live_context.get('resume_active') else service.get_document(db,agent_id)
+    return result_payload(document,conversation,conversation.workflow_state,live.messages(db,conversation)['messages'],
+        conversation.live_context.get('last_trace',[]),None,True)
+
+
 def result_payload(document, conversation, state, messages, trace, matching, matched, file_metadata=None, notice=None):
     active_node = next((node for node in walk(document.nodes) if node["id"] == state.get("survey", {}).get("node_id")), None)
     feedback = state.get("feedback_request") if state.get("closed") and not state.get("feedback_submitted") else None
@@ -64,7 +79,7 @@ def result_payload(document, conversation, state, messages, trace, matching, mat
         "feedback": {**public_feedback(feedback), "min_rating": 1, "max_rating": 5} if feedback else None,
         "feedback_confirmation": state.get("feedback_confirmation"), "channel": state.get("channel", "webchat"),
         "automation_error": automation_error, "closed_at": state.get("closed_at"), "close_source": state.get("close_source"), "csat_rating": state.get("csat_rating"),
-        "attachments": file_metadata or [], "matching": matching.report,
+        "attachments": file_metadata or [], "matching": matching.report if matching else None, "live_chat": live.public_status(conversation),
         "notice": notice if notice is not None else "" if messages or matched else "No workflow matched this event. Add a matching trigger or enable a fallback."}
 
 
@@ -93,8 +108,14 @@ def store_output(db, conversation, output):
     return messages
 
 
-def process_event(workspace_id, agent_id, body, request, db, upload_payloads=None):
-    session, _, _, agent = access(request, db, workspace_id, mutation=True, agent_id=agent_id, lock=False)
+def process_event(workspace_id, agent_id, body, request, db, upload_payloads=None, inbox_actor=None, inbox_revision=None):
+    if inbox_actor is None:
+        session, _, _, agent = access(request, db, workspace_id, mutation=True, agent_id=agent_id, lock=False)
+    else:
+        if body.event!='chat_closed' or not body.conversation_id:raise HTTPException(400,'Inbox may only close an existing live chat.')
+        session=inbox_actor;require_csrf(request,session)
+        agent_service.workspace_for(db,workspace_id,session.user_id)
+        agent=agent_service.agent_for(db,workspace_id,agent_id)
     now = utcnow()
     key = token_hash("workflow-tester:{}:{}".format(session.user_id, int(now.timestamp()) // 60))
     statement = insert(RateLimit).values(key=key, count=1, expires_at=now + timedelta(minutes=2))
@@ -108,7 +129,7 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
     if body.conversation_id:
         conversation = db.scalar(select(AgentConversation).where(AgentConversation.id == body.conversation_id,
             AgentConversation.agent_id == agent_id, AgentConversation.workspace_id == workspace_id,
-            AgentConversation.user_id == session.user_id).with_for_update().execution_options(populate_existing=True))
+            *([] if inbox_actor else [AgentConversation.user_id == session.user_id])).with_for_update().execution_options(populate_existing=True))
         if not conversation:
             raise HTTPException(404, "Conversation not found.")
     else:
@@ -116,6 +137,15 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
             agent_name=agent.name, workflow_state={})
         db.add(conversation)
         db.flush()
+    if inbox_actor:
+        live.require_assignee(conversation,session.user_id,inbox_revision)
+    elif conversation.live_status in {'pending','active'}:
+        if body.event!='message_received':raise HTTPException(409,'This conversation is with live support. Close it from Inbox.')
+        if body.language and body.language!=conversation.workflow_state.get('language'):raise HTTPException(409,'The live chat keeps the language selected at handoff.')
+        store_input(db,conversation,body,[]);conversation.live_updated_at=now;db.commit()
+        return result_payload(document,conversation,conversation.workflow_state,[],[],None,True,notice='Your message was sent to live support.')
+    if conversation.live_context.get('resume_active') and body.event in {'message_received','attachment_received'}:
+        document=live.frozen_document(conversation)
     previous = deepcopy(conversation.workflow_state or {})
     previous["custom_fields"] = custom_fields.with_defaults(db, workspace_id, conversation)
     if body.channel and previous.get("channel") and body.channel != previous["channel"]:
@@ -138,8 +168,12 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
     lifecycle_key = "close_automation" if body.event == "chat_closed" else "feedback_automation" if body.event == "collect_feedback" else None
     if lifecycle_key:
         if body.event == "chat_closed":
+            if inbox_actor:
+                conversation.live_status='closed';conversation.live_revision+=1;conversation.live_updated_at=now
+                conversation.live_context={**conversation.live_context,'return_pending':True,'return_status':'waiting_automation'}
+                live.audit(db,conversation,session.user_id,'closed')
             previous.update({"closed": True, "closed_at": now.isoformat(), "closed_by": str(session.user_id),
-                "close_source": "tester", "stack": []})
+                "close_source": "live_agent" if inbox_actor else "tester", "stack": []})
             previous.pop("survey", None)
         else:
             previous.update({"feedback_submitted": True, "csat_rating": body.rating, "feedback_submitted_at": now.isoformat()})
@@ -194,15 +228,18 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
     processing = LLMProcessingService(db, agent, request.app.state.settings, request.app.state.llm_processing_client, reserve_llm_request)
 
     auto_fill = AutoFillService(db, workspace_id, conversation.id, processing)
+    team_match = TeamMatcher(db, workspace_id)
+    handoff = live.HandoffService(db, workspace_id)
 
     def execute_state(value, continuation=None):
         return runtime.execute(document, agent, value, event_context, matching,
             api_client=request.app.state.send_api_client,
             sql_client=SQLQueryService(db, workspace_id, request.app.state.settings, request.app.state.database_client),
-            attachment_store=AttachmentStore(db, workspace_id, agent_id, conversation.id), continuation=continuation, llm_client=processing, auto_fill_client=auto_fill)
+            attachment_store=AttachmentStore(db, workspace_id, agent_id, conversation.id), continuation=continuation, llm_client=processing, auto_fill_client=auto_fill, team_match_client=team_match, handoff_client=handoff)
 
     committed_messages, committed_trace = [], []
     input_saved = False
+    handoff_returned = False
     try:
         if pending_feedback:
             state = deepcopy(previous)
@@ -221,12 +258,29 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
                 "name": "Feedback submitted", "type": "collect_feedback", "outcome": "feedback_saved"})
         else:
             state, output, trace, matched = execute_state(previous)
+        if conversation.live_context.get('return_pending') and not state.get('feedback_request'):
+            # Consume the return once, durably, before executing potentially external actions.
+            committed_messages += store_output(db,conversation,output);output=[];committed_trace += trace
+            conversation.workflow_state=deepcopy(state);conversation.custom_fields=deepcopy(state.get('custom_fields',conversation.custom_fields or {}))
+            conversation.live_context={**conversation.live_context,'return_pending':False,'return_status':'running','resume_active':True}
+            db.commit();conversation=lock_conversation(db,conversation.id)
+            frozen=live.frozen_document(conversation);return_state=deepcopy(state);return_state['closed']=False;return_state['stack']=[]
+            return_event={'event':'handoff_return','conversation_id':str(conversation.id),'language':state.get('language',agent.default_language)}
+            return_matching=request.app.state.intent_matcher.session(frozen,agent)
+            handoff_returned=True
+            state,output,return_trace,_=runtime.execute(frozen,agent,return_state,return_event,return_matching,
+                api_client=request.app.state.send_api_client,
+                sql_client=SQLQueryService(db,workspace_id,request.app.state.settings,request.app.state.database_client),
+                attachment_store=AttachmentStore(db,workspace_id,agent_id,conversation.id),llm_client=processing,auto_fill_client=auto_fill,
+                team_match_client=team_match,handoff_client=handoff,continuation=conversation.live_context['continuation'],resume_mode='handoff')
+            trace=committed_trace+return_trace;document=frozen
+            conversation.live_context={**conversation.live_context,'return_status':'returned','resume_active':bool(state.get('stack') or state.get('survey'))}
         close_request = state.pop("close_requested", None)
         if close_request:
             # A workflow closure is durable before its post-close automation.
             # Persist the incoming turn and any earlier messages/files once.
             store_input(db, conversation, body, file_metadata); input_saved = True
-            committed_messages = store_output(db, conversation, output)
+            committed_messages += store_output(db, conversation, output)
             committed_trace = trace
             state.update({"closed": True, "closed_at": utcnow().isoformat(), "closed_by": str(session.user_id),
                 "close_source": "workflow", "close_action": close_request, "close_automation": {"status": "running"}, "stack": []})
@@ -241,7 +295,7 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
             state, output, close_trace, _ = runtime.execute(document, agent, previous, closed_event, close_matching,
                 api_client=request.app.state.send_api_client,
                 sql_client=SQLQueryService(db, workspace_id, request.app.state.settings, request.app.state.database_client),
-                attachment_store=AttachmentStore(db, workspace_id, agent_id, conversation.id), llm_client=processing, auto_fill_client=auto_fill)
+                attachment_store=AttachmentStore(db, workspace_id, agent_id, conversation.id), llm_client=processing, auto_fill_client=auto_fill, team_match_client=team_match, handoff_client=handoff)
             trace = committed_trace + close_trace; matched = True
     except HTTPException as error:
         if not lifecycle_key: raise
@@ -250,6 +304,9 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
         state = deepcopy(conversation.workflow_state)
         state[lifecycle_key] = {"status": "failed", "error": str(error.detail)}
         if pending_feedback and "continuation" in pending_feedback: state["close_automation"] = {"status": "failed"}
+        if handoff_returned or conversation.live_context.get('return_pending'):
+            failed={**conversation.live_context,'return_pending':False,'return_status':'failed','resume_active':False}
+            failed.pop('nodes',None);failed.pop('continuation',None);conversation.live_context=failed
         state["stack"] = []; state.pop("survey", None)
         conversation.workflow_state = state; db.commit()
         close_failed = lifecycle_key == "close_automation"
@@ -271,13 +328,22 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
             output.append({"content": content, "quick_replies": [], "source": "llm", "node_id": None})
             trace.append({"node_id": None, "node_number": None, "name": "Generative reply", "type": "llm", "outcome": "executed"})
     if not input_saved: store_input(db, conversation, body, file_metadata)
-    if body.event in {"chat_closed", "chat_timeout"}:
+    if body.event in {"chat_closed", "chat_timeout"} and not handoff_returned:
         state["closed"] = True
     if body.event == "collect_feedback":
         state["feedback_submitted"] = True
         state["csat_rating"] = body.rating
         state.pop("feedback_request", None)
     conversation.custom_fields = deepcopy(state.get("custom_fields", conversation.custom_fields or {}))
+    live.apply_handoff(db,conversation,state)
+    if conversation.live_status=='closed' and conversation.live_context.get('resume_active') and not state.get('stack') and not state.get('survey'):
+        conversation.live_context={**conversation.live_context,'resume_active':False}
+    if conversation.live_status!='none':
+        context={**conversation.live_context,'last_trace':trace}
+        if context.get('return_pending') and state.get('feedback_request'):context['return_status']='waiting_feedback'
+        if not context.get('return_pending') and not context.get('resume_active') and conversation.live_status=='closed':
+            context.pop('nodes',None);context.pop('continuation',None)
+        conversation.live_context=context
     conversation.workflow_state = state
     messages = committed_messages + store_output(db, conversation, output)
     db.commit()
@@ -292,7 +358,7 @@ async def upload_survey_answer(workspace_id: uuid.UUID, agent_id: uuid.UUID, req
     session, _, _, _ = access(request, db, workspace_id, mutation=True, agent_id=agent_id, lock=False)
     exists = db.scalar(select(AgentConversation.id).where(AgentConversation.id == conversation_id,
         AgentConversation.agent_id == agent_id, AgentConversation.workspace_id == workspace_id,
-        AgentConversation.user_id == session.user_id))
+        ))
     if not exists:
         raise HTTPException(404, "Conversation not found.")
     payloads = await attachments.read_uploads(files)
@@ -307,7 +373,7 @@ def download_survey_answer(workspace_id: uuid.UUID, agent_id: uuid.UUID, attachm
     session, _, _, _ = access(request, db, workspace_id, agent_id=agent_id)
     file = db.scalar(select(AgentAttachment).join(AgentConversation).where(AgentAttachment.id == attachment_id,
         AgentConversation.agent_id == agent_id, AgentConversation.workspace_id == workspace_id,
-        AgentConversation.user_id == session.user_id))
-    if not file:
+        ))
+    if not file or (file.conversation_id and not db.scalar(select(AgentConversation.id).where(AgentConversation.id==file.conversation_id,AgentConversation.user_id==session.user_id)) and not live.can_view(db,db.get(AgentConversation,file.conversation_id),session.user_id)):
         raise HTTPException(404, "Attachment not found.")
     return file_response(file, request, inline=inline)

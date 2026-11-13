@@ -99,10 +99,10 @@ def consume_link(db: Session, raw_token: str, settings: Settings) -> User:
     return user
 
 
-def user_context(db: Session, user: User) -> dict:
+def user_context(db: Session, user: User, workspace_id=None) -> dict:
     row = db.execute(
         select(Workspace, Membership.role).join(Membership, Membership.workspace_id == Workspace.id)
-        .where(Membership.user_id == user.id).order_by(Membership.created_at, Membership.id).limit(1)
+        .where(Membership.user_id == user.id).order_by((Workspace.id == workspace_id).desc() if workspace_id else Membership.created_at, Membership.created_at, Membership.id).limit(1)
     ).first()
     if not row:
         raise HTTPException(409, "This account has no workspace membership.")

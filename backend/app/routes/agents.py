@@ -157,6 +157,8 @@ def delete_agent(workspace_id: uuid.UUID, agent_id: uuid.UUID, body: AgentDelete
         raise HTTPException(422, "Type the agent's exact name to confirm permanent deletion.")
     db.add(AgentChange(workspace_id=workspace_id, agent_name=agent.name, actor_id=session.user_id,
         action="deleted", summary="AI agent permanently deleted; conversation history retained.", revision=agent.revision))
+    if db.scalar(select(AgentConversation.id).where(AgentConversation.agent_id==agent_id,AgentConversation.live_status.in_(["pending","active"]))):
+        raise HTTPException(409,"Finish this agent’s pending and active live chats before deleting it.")
     db.delete(agent)
     db.commit()
 
