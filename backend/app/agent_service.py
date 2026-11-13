@@ -6,7 +6,7 @@ import warnings
 
 from fastapi import HTTPException
 from PIL import Image, ImageOps, UnidentifiedImageError
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from app.agent_schemas import AgentConfiguration
 from app.core.security import utcnow
@@ -54,12 +54,6 @@ def agent_for(db, workspace_id, agent_id, lock=False):
 def check_revision(agent, expected):
     if agent.revision != expected:
         raise HTTPException(409, "This agent changed in another session. Reload the agent before saving.")
-
-
-def check_capacity(db, workspace):
-    count = db.scalar(select(func.count()).select_from(Agent).where(Agent.workspace_id == workspace.id))
-    if count >= workspace.agent_limit:
-        raise HTTPException(409, "Your workspace has reached its plan's limit of {} AI agents.".format(workspace.agent_limit))
 
 
 def check_languages(workspace, languages):
@@ -126,7 +120,6 @@ def record_version(db, agent, actor_id, section, summary):
 
 
 def create_agent(db, workspace, actor_id, name, language="en", avatar=None, config=None, action="created"):
-    check_capacity(db, workspace)
     agent = Agent(workspace_id=workspace.id, name=name, default_language=language, languages=[language],
         persona=DEFAULT_PERSONA, llm_enabled=True, voice_enabled=False, voice_name="", voice_speed=1.0, revision=1, avatar_data=avatar)
     if config:

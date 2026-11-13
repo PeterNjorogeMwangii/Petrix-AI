@@ -33,7 +33,6 @@ class Settings(BaseSettings):
     email_limit_per_window: int = 5
     ip_limit_per_window: int = 30
     rate_limit_minutes: int = 15
-    default_agent_limit: int = 3
     default_language_limit: int = 3
     llm_base_url: str = ""
     llm_api_key: SecretStr = SecretStr("")
@@ -100,8 +99,8 @@ class Settings(BaseSettings):
             raise ValueError("Authentication expiry settings are out of range.")
         if min(self.email_limit_per_window, self.ip_limit_per_window, self.rate_limit_minutes) < 1:
             raise ValueError("Rate limits must be positive.")
-        if self.default_agent_limit < 1 or not 1 <= self.default_language_limit <= 20:
-            raise ValueError("Agent and language limits must be positive; at most 20 languages are supported.")
+        if not 1 <= self.default_language_limit <= 20:
+            raise ValueError("The default language limit must be from 1 to 20.")
         if not 1 <= self.llm_timeout_seconds <= 120 or not 1 <= self.llm_max_tokens <= 4096 or self.llm_tester_requests_per_minute < 1:
             raise ValueError("Language model request limits are invalid.")
         scores = (self.intent_fuzzy_margin, self.intent_semantic_margin, self.intent_semantic_threshold, self.intent_llm_threshold)

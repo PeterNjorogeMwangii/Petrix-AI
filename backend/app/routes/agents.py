@@ -41,7 +41,7 @@ def list_agents(workspace_id: uuid.UUID, request: Request, db: Session = Depends
     _, workspace, role, _ = access(request, db, workspace_id)
     agents = db.scalars(select(Agent).where(Agent.workspace_id == workspace_id).order_by(Agent.created_at, Agent.id)).all()
     return {"agents": [service.agent_payload(agent) for agent in agents], "can_manage": service.can_manage(db, workspace_id, role),
-        "usage": {"count": len(agents), "agent_limit": workspace.agent_limit, "language_limit": workspace.language_limit, "plan_name": workspace.plan_name}}
+        "usage": {"count": len(agents), "agent_limit": None, "language_limit": workspace.language_limit, "plan_name": workspace.plan_name}}
 
 
 @router.post("/workspaces/{workspace_id}/agents", status_code=201)
@@ -244,7 +244,7 @@ def get_roles(workspace_id: uuid.UUID, request: Request, db: Session = Depends(g
     if role not in {"owner", "admin"}:
         raise HTTPException(403, "Only workspace administrators can manage roles and permissions.")
     return {"roles": [{"role": value, "manage_ai_agents": service.can_manage(db, workspace_id, value), "locked": value == "owner"} for value in ("owner", "admin", "member")],
-        "subscription": {"plan_name": workspace.plan_name, "agent_limit": workspace.agent_limit, "language_limit": workspace.language_limit}}
+        "subscription": {"plan_name": workspace.plan_name, "agent_limit": None, "language_limit": workspace.language_limit}}
 
 
 @router.post("/workspaces/{workspace_id}/roles")

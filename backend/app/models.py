@@ -31,6 +31,7 @@ class Workspace(Base):
     setup_completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     plan_name: Mapped[str] = mapped_column(String(60), default="Starter", server_default="Starter")
+    # Legacy schema field retained for upgrades; agent creation is unlimited.
     agent_limit: Mapped[int] = mapped_column(Integer, default=3, server_default="3")
     language_limit: Mapped[int] = mapped_column(Integer, default=3, server_default="3")
     __table_args__ = (CheckConstraint("agent_limit >= 1 AND language_limit >= 1", name="ck_workspace_agent_limits"),)

@@ -55,7 +55,7 @@ def create_user_workspace(db: Session, email: str, full_name: Optional[str] = No
         .on_conflict_do_nothing(index_elements=[User.email]).returning(User.id)
     ).scalar_one_or_none()
     if inserted:
-        workspace = Workspace(agent_limit=settings.default_agent_limit if settings else 3, language_limit=settings.default_language_limit if settings else 3)
+        workspace = Workspace(language_limit=settings.default_language_limit if settings else 3)
         db.add(workspace)
         db.flush()
         db.add(Membership(user_id=user_id, workspace_id=workspace.id, role="owner"))
@@ -122,7 +122,7 @@ def workspace_payload(workspace: Workspace, role: str, db: Optional[Session] = N
         "setup_completed": workspace.setup_completed_at is not None,
         "avatar_url": f"/api/workspaces/{workspace.id}/avatar" if workspace.avatar_data else None,
         "permissions": {"manage_ai_agents": can_manage(db, workspace.id, role) if db else role in {"owner", "admin"}, "manage_workspace_roles": role in {"owner", "admin"}},
-        "subscription": {"plan_name": workspace.plan_name, "agent_limit": workspace.agent_limit, "language_limit": workspace.language_limit},
+        "subscription": {"plan_name": workspace.plan_name, "agent_limit": None, "language_limit": workspace.language_limit},
     }
 
 

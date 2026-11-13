@@ -42,7 +42,7 @@ def test_default_agent_is_created_once(client, app, agent_workspace):
     assert agent['name'] == 'Default AI Agent' and agent['revision'] == 1
     assert agent['languages'] == ['en'] and agent['default_language'] == 'en'
     assert client.get(base).json()['usage']['count'] == 1
-    assert client.get(base).json()['usage']['agent_limit'] == 3
+    assert client.get(base).json()['usage']['agent_limit'] is None
     assert client.get(base + '/' + agent['id'] + '/versions').json()['versions'][0]['number'] == 1
     with app.state.session_factory() as db:
         assert db.scalar(select(func.count()).select_from(Agent)) == 1
@@ -73,14 +73,41 @@ def test_invalid_create_is_rejected(client, agent_workspace, name, language):
     assert client.get(base).json()['usage']['count'] == 1
 
 
-def test_plan_capacity_is_enforced_for_create_and_import(client, agent_workspace):
+def test_creation_and_import_are_unlimited_for_existing_workspaces(client, agent_workspace, app):
     base, original, csrf = agent_workspace
-    assert create(client, base, csrf, 'Second').status_code == 201
-    assert create(client, base, csrf, 'Third').status_code == 201
-    assert create(client, base, csrf, 'Fourth').status_code == 409
+    with app.state.session_factory() as db:
+        # Existing installations retain their old stored plan value after upgrading.
+        db.get(Workspace, uuid.UUID(original['workspace_id'])).agent_limit = 1
+        db.commit()
+    for number in range(2, 7):
+        result = create(client, base, csrf, 'Agent {}'.format(number))
+        assert result.status_code == 201, result.text
     export = client.get(base + '/' + original['id'] + '/export')
     result = client.post(base + '/import', files={'file': ('agent.json', export.content, 'application/json')}, headers=csrf)
-    assert result.status_code == 409 and client.get(base).json()['usage']['count'] == 3
+    assert result.status_code == 201, result.text
+    listed = client.get(base).json()
+    assert listed['usage']['count'] == 7 and listed['usage']['agent_limit'] is None
+    assert client.get('/api/auth/me').json()['workspace']['subscription']['agent_limit'] is None
+    roles = client.get('/api/workspaces/' + original['workspace_id'] + '/roles').json()
+    assert roles['subscription']['agent_limit'] is None
+
+
+def test_plan_helper_cannot_restore_agent_count_limit(client, agent_workspace, app, monkeypatch):
+    import importlib.util
+    import sys
+    import app.core.config as config_module
+    import app.database as database_module
+    base, original, csrf = agent_workspace
+    for number in range(2, 5): assert create(client, base, csrf, 'Agent {}'.format(number)).status_code == 201
+    monkeypatch.setattr(config_module, 'Settings', lambda **_: app.state.settings)
+    monkeypatch.setattr(database_module, 'create_database', lambda _: (app.state.engine, app.state.session_factory))
+    monkeypatch.setattr(sys, 'argv', ['set_workspace_plan.py', original['workspace_id'], '--plan', 'Testing', '--agents', '1', '--languages', '3'])
+    spec = importlib.util.spec_from_file_location('plan_helper', Path(__file__).resolve().parents[2] / 'scripts/set_workspace_plan.py')
+    helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
+    assert helper.main() == 0
+    assert create(client, base, csrf, 'Fifth agent').status_code == 201
+    assert client.get(base).json()['usage']['count'] == 5
+    assert client.get(base).json()['usage']['agent_limit'] is None
 
 
 def test_csrf_required_for_mutations(client, agent_workspace):
