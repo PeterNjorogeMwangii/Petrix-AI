@@ -88,7 +88,7 @@ def validate_nodes(nodes, agent_id):
                         raise HTTPException(422, "This action will be configured in a later milestone.")
                     node["config"] = config_for(node["type"]).model_validate(node["config"]).model_dump(mode="json")
             except ValidationError as error:
-                if node["type"] in {"set_variable", "jump", "ask_survey", "branch", "send_api", "sql_query", "switch_language", "send_attachment", "show_carousel", "collect_feedback", "close_chat", "llm_processing", "auto_fill_field", "auto_team_match", "send_graph", "live_agent_handoff", "external_handoff"}:
+                if node["type"] in {"set_variable", "jump", "ask_survey", "branch", "send_api", "sql_query", "switch_language", "send_attachment", "show_carousel", "collect_feedback", "close_chat", "llm_processing", "auto_fill_field", "auto_team_match", "send_graph", "live_agent_handoff", "external_handoff", "ai_agent_handoff", "create_ticket"}:
                     issue = error.errors(include_url=False, include_context=False, include_input=False)[0]
                     field = ".".join(map(str, issue["loc"]))
                     location = ", " + field if field else ""
@@ -111,8 +111,8 @@ def validate_nodes(nodes, agent_id):
             else:
                 if node.get("paths"):
                     raise HTTPException(422, "Only Branch, Send API, SQL Query, LLM Processing, Auto Fill Field, Auto Team Match, and Live Agent Handoff actions can contain outcome paths.")
-                if node['type'] == 'external_handoff' and node['children']:
-                    raise HTTPException(422, "External Handoff is terminal and cannot contain follow-up actions.")
+                if node['type'] in {'external_handoff','ai_agent_handoff'} and node['children']:
+                    raise HTTPException(422, "Handoff actions cannot contain follow-up actions on the originating agent.")
                 # Keep older workflow documents byte-for-byte stable on no-op saves.
                 node.pop("paths", None)
                 visit(node["children"], depth + 1)
@@ -160,6 +160,10 @@ def save(db, agent, actor_id, body):
     validate_handoff_references(db, agent.workspace_id, nodes)
     from app.external_handoff.service import validate_references as validate_external_references
     validate_external_references(db, agent.workspace_id, nodes)
+    from app.ai_network.service import validate_references as validate_ai_references
+    validate_ai_references(db, agent, nodes)
+    from app.tickets.service import validate_references as validate_ticket_references
+    validate_ticket_references(db, agent.workspace_id, nodes)
     from app.database_connections.service import validate_references
     validate_references(db, agent.workspace_id, nodes)
     from app.workflows.actions.switch_language.validation import validate_targets

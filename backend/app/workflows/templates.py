@@ -1,10 +1,11 @@
 """Plain-text, single-pass variable substitution for messaging actions."""
 import json
+from html import escape
 import re
 
 from app.workflows.chat_script import ScriptError
 
-TOKEN = re.compile(r"\{\{\s*([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*|_chatbot\.name)\s*\}\}|\{([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*|_chatbot\.name)\}")
+TOKEN = re.compile(r"\{\{\s*([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*|_transferred_context(?:\.[A-Za-z0-9_]+)*|_chatbot\.name)\s*\}\}|\{([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*|_transferred_context(?:\.[A-Za-z0-9_]+)*|_chatbot\.name)\}")
 
 
 def resolve(path, context):
@@ -27,7 +28,7 @@ def resolve(path, context):
     return value
 
 
-def render(source, context, maximum=4000, allow_empty=False):
+def render(source, context, maximum=4000, allow_empty=False, escape_values=False):
 
     def text(value):
         if value is None: return ""
@@ -38,6 +39,7 @@ def render(source, context, maximum=4000, allow_empty=False):
     for match in TOKEN.finditer(source):
         literal = source[position:match.start()]
         replacement = text(resolve(match.group(1) or match.group(2), context))
+        if escape_values: replacement = escape(replacement, quote=True)
         size += len(literal) + len(replacement)
         if size > maximum: raise ScriptError("The rendered message or quick reply is too long.")
         chunks.extend([literal, replacement]); position = match.end()

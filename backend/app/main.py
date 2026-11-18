@@ -2,6 +2,8 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from starlette.middleware.sessions import SessionMiddleware
@@ -11,7 +13,8 @@ from app.core.config import Settings
 from app.database import create_database
 from app.mailer import SMTPMailer
 from app.oauth import create_oauth
-from app.routes import agents, auth, custom_fields, database_connections, knowledge, workflow_assets, workflows, workspaces, teams, inbox, external_integrations
+from app.routes import agents, auth, custom_fields, database_connections, knowledge, workflow_assets, workflows, workspaces, teams, inbox, external_integrations, ai_network, tickets
+from app.ai_network.client import PeerClient
 from app.external_handoff.client import ProviderClient
 from app.database_connections.client import DatabaseClient
 from app.llm_tester import LLMTester
@@ -26,10 +29,35 @@ def create_app(settings: Optional[Settings] = None, mailer=None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
+        worker=None
+        knowledge_worker=None
+        if settings.support_worker_enabled and settings.app_env!='test':
+            from app.teamspace.worker import start
+            worker=start(application)
+        if settings.knowledge_worker_enabled and settings.app_env!='test':
+            from app.agent_knowledge.worker import start as start_knowledge
+            knowledge_worker=start_knowledge(application)
         yield
+        if knowledge_worker:
+            knowledge_worker[0].set()
+            import asyncio
+            await asyncio.to_thread(knowledge_worker[1].join,50)
+        if worker:
+            worker[0].set()
+            import asyncio
+            await asyncio.to_thread(worker[1].join,25)
         engine.dispose()
 
-    application = FastAPI(title="Petrix AI", version="0.20.0", description="Permanent External Handoff for verified native Zendesk/Bitrix24 integrations, read-only external history, and durable transfer review. Live Agent Handoff with authenticated Inbox, team members, expiring availability and saved AI return paths, Send Graph with seven interactive chart types and CSV/PNG exports, Auto Team Match and workspace Teams settings, Auto Fill Field and conversation Custom Fields settings, LLM Processing with Groq and agent-owned Knowledge text sources, AI agents, workflows, Close Chat actions and permanent Chat Closed automation and localised rating/survey feedback with saved variables and continuation, localised file attachments and interactive carousels, surveys, conversation language switching, read-only SQL queries, verified database connections, HTTPS API requests, conditional Branch paths, Jump redirects, session variables, and layered intent matching.", lifespan=lifespan)
+    application = FastAPI(title="Petrix AI", version="0.26.0", description="Agent Knowledge file/URL/snippet ingestion, durable jobs, bounded retrieval, master prompt guidance and input/output moderation integration. My profile Account and User Aliases, immutable chat/avatar/signature snapshots, manual ticket replies, personal presence/themes/notifications, guarded workspace switching and tabbed Inbox drafts. Teamspace support settings, typed People profiles, ban enforcement, five assignment methods with frozen priorities, durable analysis/co-pilot/export jobs, tags enforcement, overdue tickets, profile and analytics embeds. Workspace General, independent Workspace/Team roles, protected Admin, users/invitations/idle logout, enforced IPv4/IPv6 allowlists, applied logos/colours, actual weighted usage and configurable Stripe billing. Create Ticket with assignment, copied/overridden custom fields, tags, DNS-verified email domains, HTML templates and durable initial notifications. Authenticated AI Agent Handoff with Network credentials, filtered transferred context, durable same-window receiving workflows and file delivery. Permanent External Handoff for verified native Zendesk/Bitrix24 integrations, read-only external history, and durable transfer review. Live Agent Handoff with authenticated Inbox, team members, expiring availability and saved AI return paths, Send Graph with seven interactive chart types and CSV/PNG exports, Auto Team Match and workspace Teams settings, Auto Fill Field and conversation Custom Fields settings, LLM Processing with Groq and agent-owned Knowledge text sources, AI agents, workflows, Close Chat actions and permanent Chat Closed automation and localised rating/survey feedback with saved variables and continuation, localised file attachments and interactive carousels, surveys, conversation language switching, read-only SQL queries, verified database connections, HTTPS API requests, conditional Branch paths, Jump redirects, session variables, and layered intent matching.", lifespan=lifespan)
+    from app.workspace_settings.billing import StripeClient
+    application.state.stripe_client=StripeClient(settings)
+    from app.teamspace.ai import SupportAI
+    application.state.support_ai=SupportAI(settings)
+    application.state.knowledge_fetcher=SendAPIClient(max_response_bytes=512*1024,validate_response=False)
+    from app.agent_knowledge.web import WebsiteReader
+    from app.agent_knowledge.moderation import Moderator
+    application.state.agent_knowledge_reader=WebsiteReader()
+    application.state.agent_moderator=Moderator(settings)
     application.state.settings = settings
     application.state.engine = engine
     application.state.session_factory = session_factory
@@ -41,8 +69,18 @@ def create_app(settings: Optional[Settings] = None, mailer=None) -> FastAPI:
     application.state.send_api_client = SendAPIClient(settings.send_api_allowed_private_hosts.split(",") if settings.send_api_allowed_private_hosts else ())
     application.state.database_client = DatabaseClient()
     application.state.external_handoff_client = ProviderClient(application.state.send_api_client)
+    application.state.ai_network_client=PeerClient(settings)
+    from app.tickets.dns import DomainDNS
+    application.state.ticket_dns=DomainDNS()
+    application.state.ticket_mailer=mailer if mailer and hasattr(mailer,"send_ticket") else SMTPMailer(settings)
     application.add_middleware(CORSMiddleware, allow_origins=[settings.frontend_origin], allow_credentials=True, allow_methods=["GET", "POST"], allow_headers=["Content-Type", "X-Petrix-CSRF"])
     application.add_middleware(SessionMiddleware, secret_key=settings.session_signing_secret.get_secret_value(), session_cookie="petrix_oauth", max_age=600, same_site="lax", https_only=settings.secure_cookies)
+
+    @application.exception_handler(RequestValidationError)
+    async def network_validation(request, error):
+        if '/network/' in request.url.path or request.url.path.startswith('/api/ai-network/'):
+            return JSONResponse({'detail':'Check the AI agent connection fields and request format.'},status_code=422)
+        return await request_validation_exception_handler(request,error)
 
     @application.middleware("http")
     async def headers_and_origin(request: Request, call_next):
@@ -69,15 +107,27 @@ def create_app(settings: Optional[Settings] = None, mailer=None) -> FastAPI:
             return JSONResponse({"status": "unavailable"}, status_code=503)
         return {"status": "ok", "service": "Petrix AI"}
 
+    from app.workspace_settings.routes import router as workspace_settings_router
+    from app.workspace_settings.billing import router as billing_router
+    application.include_router(workspace_settings_router)
+    application.include_router(billing_router)
+    from app.teamspace.routes import router as teamspace_router
+    application.include_router(teamspace_router)
+    from app.profile.routes import router as profile_router
+    application.include_router(profile_router)
     application.include_router(auth.router)
     application.include_router(workspaces.router)
     application.include_router(agents.router)
     application.include_router(database_connections.router)
     application.include_router(knowledge.router)
+    from app.agent_knowledge.routes import router as knowledge_sources_router
+    application.include_router(knowledge_sources_router)
     application.include_router(custom_fields.router)
     application.include_router(teams.router)
     application.include_router(inbox.router)
     application.include_router(external_integrations.router)
+    application.include_router(ai_network.router)
+    application.include_router(tickets.router)
     application.include_router(workflows.router)
     application.include_router(workflow_assets.router)
     return application

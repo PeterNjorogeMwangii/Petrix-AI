@@ -14,7 +14,7 @@ router = APIRouter(prefix='/api/workspaces/{workspace_id}/teams', tags=['Teams']
 def list_teams(workspace_id: uuid.UUID, request: Request, db: Session = Depends(get_db)):
     _, _, role, _ = access(request, db, workspace_id)
     return {'teams': [service.payload(team) for team in service.definitions(db, workspace_id)],
-        'can_manage': agent_service.can_manage(db, workspace_id, role)}
+        'can_manage': __import__('app.workspace_settings.permissions',fromlist=['allowed']).allowed(db,workspace_id,'manage_teams')}
 
 
 @router.post('', status_code=201)
@@ -34,3 +34,13 @@ def delete_team(workspace_id: uuid.UUID, team_id: uuid.UUID, body: TeamDelete, r
     session, _, _, _ = access(request, db, workspace_id, mutation=True)
     service.remove(db, workspace_id, session.user_id, team_id, body)
     return Response(status_code=204)
+
+
+@router.get('/role-options')
+def team_role_options(workspace_id:uuid.UUID,request:Request,db:Session=Depends(get_db)):
+    access(request,db,workspace_id)
+    from app.workspace_settings.permissions import require,accessible_spaces
+    from app.workspace_settings.routes import spaces_payload
+    from app.models import WorkspaceRole
+    require(db,workspace_id,'manage_teams')
+    return {'roles':[{'id':str(r.id),'name':r.name} for r in db.scalars(__import__('sqlalchemy').select(WorkspaceRole).where(WorkspaceRole.workspace_id==workspace_id,WorkspaceRole.kind=='team'))], 'teamspaces':spaces_payload(db,workspace_id)}

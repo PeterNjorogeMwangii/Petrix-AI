@@ -67,6 +67,14 @@ def test_survey_match_branch_jump_and_saved_team_result(client, workflow, app, m
     with app.state.session_factory() as db:
         conversation = db.get(AgentConversation, uuid.UUID(payload['conversation_id']))
         assert conversation.workflow_state['variables']['matched_team']['id'] == team['id']
+        from app.models import UsageEvent
+        from app.workspace_settings.usage import record_actions
+        before=list(db.scalars(select(UsageEvent).where(UsageEvent.workspace_id==conversation.workspace_id,UsageEvent.category=='auto_team_match')))
+        assert len(before)==1
+        event_id=uuid.uuid4()
+        record_actions(db,conversation.workspace_id,conversation.agent_id,conversation.user_id,payload,event_id)
+        record_actions(db,conversation.workspace_id,conversation.agent_id,conversation.user_id,payload,event_id)
+        assert len(list(db.scalars(select(UsageEvent).where(UsageEvent.workspace_id==conversation.workspace_id,UsageEvent.category=='auto_team_match'))))==2
 
 
 @pytest.mark.parametrize('source,mode,expected', [('Unknown','template','no_match'), ('BOT and NMB','template','no_match'),

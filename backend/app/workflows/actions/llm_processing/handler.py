@@ -48,6 +48,19 @@ def execute(config, context):
         if type(result.text) is not str or not result.text.strip():
             result = ProcessingResult("error", error="invalid_response")
         else:
-            try: context.assign(config["variable_name"], result.text)
+            try:
+                value=result.text
+                if config.get('output_format','text')=='json':
+                    def reject_constant(_):raise ValueError()
+                    def unique_pairs(pairs):
+                        data={}
+                        for key,item in pairs:
+                            if key in data:raise ValueError()
+                            data[key]=item
+                        return data
+                    value=json.loads(result.text,parse_constant=reject_constant,object_pairs_hook=unique_pairs)
+                    if type(value) is not dict:raise ValueError()
+                context.assign(config["variable_name"],value)
             except ScriptError: result = ProcessingResult("error", error="variable_limit")
+            except (ValueError,TypeError,RecursionError):result=ProcessingResult('error',error='invalid_json_response')
     return LLMOutcome(config[result.outcome + "_path_id"], result.outcome, result.error, model, sources)

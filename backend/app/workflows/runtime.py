@@ -8,12 +8,14 @@ from app.workflows.actions.branch.handler import BranchSelect
 from app.workflows.actions.send_api.handler import APIOutcome
 from app.workflows.actions.sql_query.handler import QueryOutcome
 from app.workflows.actions.jump.handler import JumpTo
+from app.workflows.actions.create_ticket.handler import TicketCreated
 from app.workflows.actions.collect_feedback.handler import FeedbackRequest
 from app.workflows.actions.close_chat.handler import CloseChat
 from app.workflows.actions.llm_processing.handler import LLMOutcome
 from app.workflows.actions.auto_fill_field.handler import AutoFillOutcome
 from app.workflows.actions.auto_team_match.handler import TeamMatchOutcome
 from app.workflows.actions.send_graph.handler import GraphSkipped
+from app.workflows.actions.ai_agent_handoff.handler import AIAgentHandoff
 from app.workflows.actions.external_handoff.handler import ExternalHandoff
 from app.workflows.actions.live_agent_handoff.handler import HandoffWait, HandoffUnavailable
 from app.workflows.post_close import POST_CLOSE_ACTIONS, PostCloseFlow
@@ -51,7 +53,7 @@ def choose_trigger(nodes, event, agent, language):
     return best or (fallback if event["event"] in {"message_received", "attachment_received"} else None)
 
 
-def execute(document, agent, state, event, matching=None, api_client=None, sql_client=None, attachment_store=None, continuation=None, llm_client=None, auto_fill_client=None, team_match_client=None, handoff_client=None, external_handoff_client=None, resume_mode="post_close"):
+def execute(document, agent, state, event, matching=None, api_client=None, sql_client=None, attachment_store=None, continuation=None, llm_client=None, auto_fill_client=None, team_match_client=None, handoff_client=None, external_handoff_client=None, ai_handoff_client=None, ticket_client=None, resume_mode="post_close"):
     index, entries, enabled = {}, {}, {}
 
     def collect(nodes, continuation=None, ancestors_enabled=True):
@@ -87,7 +89,7 @@ def execute(document, agent, state, event, matching=None, api_client=None, sql_c
     if language not in agent.languages:
         language = agent.default_language
     state["language"] = language
-    context = ActionContext(agent=agent, language=language, event=event, state=state, api_client=api_client, sql_client=sql_client, attachment_store=attachment_store, llm_client=llm_client, auto_fill_client=auto_fill_client, team_match_client=team_match_client, handoff_client=handoff_client, external_handoff_client=external_handoff_client)
+    context = ActionContext(agent=agent, language=language, event=event, state=state, api_client=api_client, sql_client=sql_client, attachment_store=attachment_store, llm_client=llm_client, auto_fill_client=auto_fill_client, team_match_client=team_match_client, handoff_client=handoff_client, external_handoff_client=external_handoff_client, ai_handoff_client=ai_handoff_client, ticket_client=ticket_client)
     same_revision = state.get("workflow_revision") == document.revision
     stack = deepcopy(continuation) if resuming_feedback else [list(frame) for frame in state.get("stack", [])] if same_revision else []
     trace, output = [], []
@@ -175,13 +177,22 @@ def execute(document, agent, state, event, matching=None, api_client=None, sql_c
                 if node["type"] not in ACTIONS or not ACTIONS[node["type"]]["available"]:
                     raise ScriptError("This action is not ready to execute yet.")
                 previous_language = context.language
+                context.current_node_id=node["id"]
                 result = handler_for(node["type"])(node["config"], context)
+                if isinstance(result, TicketCreated):
+                    trace.append({"node_id":node["id"],"node_number":node["number"],"name":node["name"],"type":"create_ticket","outcome":"created","ticket_id":result.id,"reference":result.reference})
+                    stack.append([child["id"] for child in node["children"]]);continue
                 if isinstance(result, HandoffUnavailable):
                     path = next((p for p in node['paths'] if p['id']==result.path_id), None)
                     if path is None: raise ScriptError('The unavailable handoff path is missing.')
                     trace.append({'node_id':node['id'],'node_number':node['number'],'name':node['name'],
                         'type':'live_agent_handoff','outcome':'unavailable','reason':result.reason})
                     stack.append([child['id'] for child in path['children']]);continue
+                if isinstance(result, AIAgentHandoff):
+                    state['ai_handoff_request']={'connection_id':result.connection_id,'node_id':node['id'],'node_number':node['number']}
+                    trace.append({'node_id':node['id'],'node_number':node['number'],'name':node['name'],'type':'ai_agent_handoff','outcome':'transferring'})
+                    state.pop('survey',None);stack=[]
+                    return finish(True)
                 if isinstance(result, ExternalHandoff):
                     state['external_handoff_request'] = {'platform': result.platform, 'node_id': node['id'], 'node_number': node['number']}
                     trace.append({'node_id':node['id'],'node_number':node['number'],'name':node['name'],'type':'external_handoff','outcome':'transfer_requested'})
@@ -193,7 +204,8 @@ def execute(document, agent, state, event, matching=None, api_client=None, sql_c
                     state['handoff_request']={'node_id':node['id'],'node_number':node['number'],
                         'workflow_revision':document.revision,'nodes':deepcopy(document.nodes),
                         'continuation':deepcopy(stack)+[[child['id'] for child in path['children']]],
-                        'routing':result.routing,'eligible_ids':result.eligible_ids,'assigned_id':result.assigned_id}
+                        'routing':result.routing,'eligible_ids':result.eligible_ids,'assigned_id':result.assigned_id,
+                        'priority':result.priority,'priority_type':result.priority_type}
                     trace.append({'node_id':node['id'],'node_number':node['number'],'name':node['name'],
                         'type':'live_agent_handoff','outcome':'assigned' if result.assigned_id else 'queued'})
                     state.pop('survey',None);stack=[]

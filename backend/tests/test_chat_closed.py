@@ -94,15 +94,14 @@ def test_conversational_steps_cannot_be_added_anywhere_under_chat_closed(bad, ne
     assert error.value.status_code == 422
 
 
-def test_catalogue_has_exact_post_close_allow_list_with_planned_entries(client, workflow):
+def test_catalogue_has_exact_post_close_allow_list_with_ready_actions(client, workflow):
     path, document, _ = workflow
     assert len(document['actions']) == 20
     assert {value['type'] for value in document['actions'] if value['allowed_after_close']} == set(POST_CLOSE_ACTIONS)
     assert len(POST_CLOSE_ACTIONS) == 13
     assert next(value for value in document['actions'] if value['type'] == 'collect_feedback')['post_close_only']
     assert all(not value['allowed_after_close'] for value in document['actions'] if value['type'] in {'send_message','send_attachment','show_carousel','ask_survey'})
-    for kind in ['create_ticket']:
-        assert not next(value for value in document['actions'] if value['type'] == kind)['available']
+    assert all(value['available'] for value in document['actions'])
     root = closed_root(document)
     assert root['id'] == node_id(document['agent_id'], 'chat_closed') and root['enabled']
 

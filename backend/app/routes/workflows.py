@@ -24,6 +24,8 @@ from app.workflows.actions.auto_fill_field.service import AutoFillService
 from app.teams.service import TeamMatcher
 from app.inbox import service as live
 from app.external_handoff import service as external
+from app.ai_network import service as ai_network
+from app.ai_network import sender as ai_sender
 from app.auth_service import require_csrf
 from app import agent_service
 from app.custom_fields import service as custom_fields
@@ -64,7 +66,13 @@ def conversation_state(workspace_id:uuid.UUID,agent_id:uuid.UUID,conversation_id
     conversation=db.scalar(select(AgentConversation).where(AgentConversation.id==conversation_id,
         AgentConversation.workspace_id==workspace_id,AgentConversation.agent_id==agent_id,AgentConversation.user_id==session.user_id))
     if not conversation:raise HTTPException(404,'Conversation not found.')
-    document=live.frozen_document(conversation) if conversation.live_context.get('resume_active') else service.get_document(db,agent_id)
+    outgoing=db.get(ai_network.AIOutgoingSession,conversation.id)
+    if outgoing and outgoing.status!='failed':return ai_sender.refresh(db,conversation,outgoing,request)
+    return snapshot_payload(db,conversation)
+
+
+def snapshot_payload(db,conversation):
+    document=live.frozen_document(conversation) if conversation.live_context.get('resume_active') else service.get_document(db,conversation.agent_id)
     return result_payload(document,conversation,conversation.workflow_state,live.messages(db,conversation)['messages'],
         conversation.live_context.get('last_trace',[]),None,True)
 
@@ -73,13 +81,13 @@ def result_payload(document, conversation, state, messages, trace, matching, mat
     active_node = next((node for node in walk(document.nodes) if node["id"] == state.get("survey", {}).get("node_id")), None)
     feedback = state.get("feedback_request") if state.get("closed") and not state.get("feedback_submitted") else None
     automation_error = (state.get("feedback_automation") or state.get("close_automation") or {}).get("error")
-    return {"conversation_id": str(conversation.id), "messages": messages, "trace": trace,
+    return {"conversation_id": str(conversation.id), "messages": messages, "trace": trace, "last_ticket": state.get("last_ticket"),
         "workflow_revision": document.revision, "language": state.get("language", "en"), "closed": bool(state.get("closed")),
         "feedback_submitted": bool(state.get("feedback_submitted")), "waiting": bool(state.get("stack")) or bool(state.get("survey")),
         "variables": state.get("variables", {}), "custom_fields": conversation.custom_fields or {}, "survey": survey.status(active_node, state) if active_node else None,
         "feedback": {**public_feedback(feedback), "min_rating": 1, "max_rating": 5} if feedback else None,
         "feedback_confirmation": state.get("feedback_confirmation"), "channel": state.get("channel", "webchat"),
-        "external_handoff": state.get("external_handoff"), "automation_error": automation_error, "closed_at": state.get("closed_at"), "close_source": state.get("close_source"), "csat_rating": state.get("csat_rating"),
+        "ai_handoff": state.get("ai_handoff"), "external_handoff": state.get("external_handoff"), "automation_error": automation_error, "closed_at": state.get("closed_at"), "close_source": state.get("close_source"), "csat_rating": state.get("csat_rating"),
         "attachments": file_metadata or [], "matching": matching.report if matching else None, "live_chat": live.public_status(conversation),
         "notice": notice if notice is not None else "" if messages or matched else "No workflow matched this event. Add a matching trigger or enable a fallback."}
 
@@ -89,13 +97,14 @@ def lock_conversation(db, conversation_id):
         .with_for_update().execution_options(populate_existing=True))
 
 
-def store_input(db, conversation, body, files):
+def store_input(db, conversation, body, files, source_request_id=None):
+    provenance={"source_request_id":str(source_request_id)} if source_request_id else {}
     if body.event == "message_received":
-        db.add(AgentMessage(conversation_id=conversation.id, role="user", content=body.content))
+        db.add(AgentMessage(conversation_id=conversation.id, role="user", content=body.content,message_data=provenance))
     elif body.event == "attachment_received":
         db.add(AgentMessage(conversation_id=conversation.id, role="user",
             content="Uploaded: " + ", ".join(file["name"] for file in files) if files else "Attachment test: " + body.attachment.name,
-            message_data={"event": body.event, "attachment": body.attachment.model_dump(), "attachments": files}))
+            message_data={**provenance, "event": body.event, "attachment": body.attachment.model_dump(), "attachments": files}))
 
 
 def store_output(db, conversation, output):
@@ -109,8 +118,31 @@ def store_output(db, conversation, output):
     return messages
 
 
-def process_event(workspace_id, agent_id, body, request, db, upload_payloads=None, inbox_actor=None, inbox_revision=None):
-    if inbox_actor is None:
+def process_event(workspace_id, agent_id, body, request, db, upload_payloads=None, inbox_actor=None, inbox_revision=None, network_actor=None):
+    result=_process_event(workspace_id,agent_id,body,request,db,upload_payloads,inbox_actor,inbox_revision,network_actor)
+    from app.workspace_settings.usage import record_actions
+    from app.models import AgentConversation
+    metered_conversation=db.get(AgentConversation,uuid.UUID(result['conversation_id']))
+    record_actions(db,workspace_id,agent_id,metered_conversation.user_id,result,body.client_event_id or (network_actor.request_id if network_actor else None))
+    if result.get('last_ticket'):
+        from app.tickets.notifications import dispatch
+        dispatch(db,request.app.state.ticket_mailer,conversation_id=uuid.UUID(result['conversation_id']))
+    from app.teamspace.jobs import maybe_auto
+    maybe_auto(db,metered_conversation,request.app.state.settings)
+    if inbox_actor:
+        from app.teamspace.assignment import drain
+        drain(db,workspace_id)
+    return result
+
+
+def _process_event(workspace_id, agent_id, body, request, db, upload_payloads=None, inbox_actor=None, inbox_revision=None, network_actor=None):
+    if network_actor is not None:
+        if network_actor.agent_id!=agent_id or body.conversation_id not in {None,network_actor.conversation_id}:
+            raise HTTPException(403,'Network session scope mismatch.')
+        session=network_actor
+        agent_service.workspace_for(db,workspace_id,session.user_id,manage=True)
+        agent=agent_service.agent_for(db,workspace_id,agent_id)
+    elif inbox_actor is None:
         session, _, _, agent = access(request, db, workspace_id, mutation=True, agent_id=agent_id, lock=False)
     else:
         if body.event!='chat_closed' or not body.conversation_id:raise HTTPException(400,'Inbox may only close an existing live chat.')
@@ -124,11 +156,21 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
     db.commit()
     if count > 60:
         raise HTTPException(429, "Too many tester events. Wait a minute and try again.")
-    if body.language and body.language not in agent.languages:
+    if body.language and body.language not in agent.languages and not body.conversation_id and not network_actor:
         raise HTTPException(422, "Choose a language configured for this agent.")
     document = service.get_document(db, agent_id)
-    if body.conversation_id:
-        conversation = db.scalar(select(AgentConversation).where(AgentConversation.id == body.conversation_id,
+    recovered_ticket_start=False
+    selected_conversation=network_actor.conversation_id if network_actor else body.conversation_id
+    if not selected_conversation and not network_actor and body.event=='chat_started' and body.client_event_id:
+        selected_conversation=db.scalar(select(AgentConversation.id).join(ai_network.AIOutgoingSession,ai_network.AIOutgoingSession.conversation_id==AgentConversation.id).where(
+            AgentConversation.workspace_id==workspace_id,AgentConversation.agent_id==agent_id,AgentConversation.user_id==session.user_id,ai_network.AIOutgoingSession.transfer_id==body.client_event_id))
+        if not selected_conversation:
+            from app.models import SupportTicket
+            selected_conversation=db.scalar(select(AgentConversation.id).join(SupportTicket,SupportTicket.conversation_id==AgentConversation.id).where(
+                AgentConversation.workspace_id==workspace_id,AgentConversation.agent_id==agent_id,AgentConversation.user_id==session.user_id,SupportTicket.execution_id==body.client_event_id).limit(1))
+            recovered_ticket_start=bool(selected_conversation)
+    if selected_conversation:
+        conversation = db.scalar(select(AgentConversation).where(AgentConversation.id == selected_conversation,
             AgentConversation.agent_id == agent_id, AgentConversation.workspace_id == workspace_id,
             *([] if inbox_actor else [AgentConversation.user_id == session.user_id])).with_for_update().execution_options(populate_existing=True))
         if not conversation:
@@ -138,15 +180,26 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
             agent_name=agent.name, workflow_state={})
         db.add(conversation)
         db.flush()
+    from app.teamspace.records import person_for,check_ban,check_resolution
+    person_for(db,conversation,network_actor is not None)
+    if not inbox_actor:check_ban(db,conversation,network_actor is not None)
+    if body.event=='chat_closed':check_resolution(db,workspace_id,'chats',conversation)
+    outgoing=db.get(ai_network.AIOutgoingSession,conversation.id)
+    if outgoing and outgoing.status!='failed' and inbox_actor is None:
+        return ai_sender.forward_event(db,conversation,outgoing,body,request,upload_payloads,network_actor)
+    if recovered_ticket_start:return snapshot_payload(db,conversation)
+    if body.language and body.language not in agent.languages:
+        raise HTTPException(422,'Choose a language configured for this agent.')
     external_binding=db.get(external.ExternalConversation,conversation.id)
     if external_binding and external_binding.status in external.BLOCKED:
         raise HTTPException(409, 'This conversation has left Petrix AI processing. Continue in the external platform; unconfirmed transfers require review.')
     if inbox_actor:
+        live.require_manage(db,conversation,session.user_id)
         live.require_assignee(conversation,session.user_id,inbox_revision)
     elif conversation.live_status in {'pending','active'}:
         if body.event!='message_received':raise HTTPException(409,'This conversation is with live support. Close it from Inbox.')
         if body.language and body.language!=conversation.workflow_state.get('language'):raise HTTPException(409,'The live chat keeps the language selected at handoff.')
-        store_input(db,conversation,body,[]);conversation.live_updated_at=now;db.commit()
+        store_input(db,conversation,body,[],network_actor.request_id if network_actor else body.client_event_id);conversation.live_updated_at=now;db.commit()
         return result_payload(document,conversation,conversation.workflow_state,[],[],None,True,notice='Your message was sent to live support.')
     if conversation.live_context.get('resume_active') and body.event in {'message_received','attachment_received'}:
         document=live.frozen_document(conversation)
@@ -198,6 +251,8 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
             raise HTTPException(409, "There is no active survey question for this answer.")
     event_context = body.model_dump(mode="json")
     event_context["conversation_id"] = str(conversation.id)
+    from app.tickets.service import TicketService
+    ticket_service=TicketService(db,workspace_id,session.user_id,conversation,body.client_event_id or (network_actor.request_id if network_actor and network_actor.request_id else uuid.uuid4()))
     if pending_feedback: event_context["language"] = pending_feedback.get("language") or previous.get("language")
     file_metadata = []
     if upload_payloads is not None:
@@ -229,18 +284,19 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
             raise HTTPException(429, "Too many model requests. Wait a minute and try again.")
 
     matching = request.app.state.intent_matcher.session(document, agent, history, reserve_llm_request)
-    processing = LLMProcessingService(db, agent, request.app.state.settings, request.app.state.llm_processing_client, reserve_llm_request)
+    processing = LLMProcessingService(db, agent, request.app.state.settings, request.app.state.llm_processing_client, reserve_llm_request,request.app.state.agent_moderator)
 
     auto_fill = AutoFillService(db, workspace_id, conversation.id, processing)
     team_match = TeamMatcher(db, workspace_id)
-    handoff = live.HandoffService(db, workspace_id)
+    handoff = live.HandoffService(db, workspace_id, conversation)
+    ai_handoff=ai_network.TransferPlan(db,conversation,request.app.state.settings)
     external_handoff=external.HandoffService(db,conversation,request.app.state.settings,request.app.state.external_handoff_client)
 
     def execute_state(value, continuation=None):
         return runtime.execute(document, agent, value, event_context, matching,
             api_client=request.app.state.send_api_client,
             sql_client=SQLQueryService(db, workspace_id, request.app.state.settings, request.app.state.database_client),
-            attachment_store=AttachmentStore(db, workspace_id, agent_id, conversation.id), continuation=continuation, llm_client=processing, auto_fill_client=auto_fill, team_match_client=team_match, handoff_client=handoff, external_handoff_client=external_handoff)
+            attachment_store=AttachmentStore(db, workspace_id, agent_id, conversation.id), continuation=continuation, llm_client=processing, auto_fill_client=auto_fill, team_match_client=team_match, handoff_client=handoff, external_handoff_client=external_handoff,ai_handoff_client=ai_handoff,ticket_client=ticket_service)
 
     committed_messages, committed_trace = [], []
     input_saved = False
@@ -277,14 +333,15 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
                 api_client=request.app.state.send_api_client,
                 sql_client=SQLQueryService(db,workspace_id,request.app.state.settings,request.app.state.database_client),
                 attachment_store=AttachmentStore(db,workspace_id,agent_id,conversation.id),llm_client=processing,auto_fill_client=auto_fill,
-                team_match_client=team_match,handoff_client=handoff,external_handoff_client=external_handoff,continuation=conversation.live_context['continuation'],resume_mode='handoff')
+                team_match_client=team_match,handoff_client=handoff,external_handoff_client=external_handoff,ai_handoff_client=ai_handoff,ticket_client=ticket_service,continuation=conversation.live_context['continuation'],resume_mode='handoff')
             trace=committed_trace+return_trace;document=frozen
             conversation.live_context={**conversation.live_context,'return_status':'returned','resume_active':bool(state.get('stack') or state.get('survey'))}
         close_request = state.pop("close_requested", None)
         if close_request:
+            check_resolution(db,workspace_id,'chats',conversation)
             # A workflow closure is durable before its post-close automation.
             # Persist the incoming turn and any earlier messages/files once.
-            store_input(db, conversation, body, file_metadata); input_saved = True
+            store_input(db, conversation, body, file_metadata,network_actor.request_id if network_actor else body.client_event_id); input_saved = True
             committed_messages += store_output(db, conversation, output)
             committed_trace = trace
             state.update({"closed": True, "closed_at": utcnow().isoformat(), "closed_by": str(session.user_id),
@@ -300,7 +357,7 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
             state, output, close_trace, _ = runtime.execute(document, agent, previous, closed_event, close_matching,
                 api_client=request.app.state.send_api_client,
                 sql_client=SQLQueryService(db, workspace_id, request.app.state.settings, request.app.state.database_client),
-                attachment_store=AttachmentStore(db, workspace_id, agent_id, conversation.id), llm_client=processing, auto_fill_client=auto_fill, team_match_client=team_match, handoff_client=handoff, external_handoff_client=external_handoff)
+                attachment_store=AttachmentStore(db, workspace_id, agent_id, conversation.id), llm_client=processing, auto_fill_client=auto_fill, team_match_client=team_match, handoff_client=handoff, external_handoff_client=external_handoff,ai_handoff_client=ai_handoff,ticket_client=ticket_service)
             trace = committed_trace + close_trace; matched = True
     except HTTPException as error:
         if not lifecycle_key: raise
@@ -329,10 +386,11 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
             history = [{"role": item.role, "content": item.content} for item in reversed(recent)]
             history.append({"role": "user", "content": body.content})
             # Keep nested-trigger context if a provider fails; the whole turn rolls back.
-            content = request.app.state.llm_tester.reply(agent, history, language=state["language"])
-            output.append({"content": content, "quick_replies": [], "source": "llm", "node_id": None})
-            trace.append({"node_id": None, "node_number": None, "name": "Generative reply", "type": "llm", "outcome": "executed"})
-    if not input_saved: store_input(db, conversation, body, file_metadata)
+            from app.agent_knowledge.generation import reply as knowledge_reply
+            content,knowledge_meta = knowledge_reply(db,agent,request.app.state.llm_tester,history,state['language'],request.app.state.agent_moderator)
+            output.append({"content": content, "quick_replies": [], "source": "llm", "node_id": None,**knowledge_meta})
+            trace.append({"node_id": None, "node_number": None, "name": "Generative reply", "type": "llm", "outcome": "executed",**knowledge_meta})
+    if not input_saved: store_input(db, conversation, body, file_metadata,network_actor.request_id if network_actor else body.client_event_id)
     if body.event in {"chat_closed", "chat_timeout"} and not handoff_returned:
         state["closed"] = True
     if body.event == "collect_feedback":
@@ -340,6 +398,13 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
         state["csat_rating"] = body.rating
         state.pop("feedback_request", None)
     conversation.custom_fields = deepcopy(state.get("custom_fields", conversation.custom_fields or {}))
+    ai_request=state.pop('ai_handoff_request',None)
+    if ai_request:
+        earlier=committed_messages+store_output(db,conversation,output)
+        result=ai_sender.start(db,conversation,ai_handoff,state,request,network_actor.request_id if network_actor else body.client_event_id)
+        result['messages']=earlier+result['messages']
+        result['trace']=trace+result.get('trace',[])
+        return result
     external_request=state.pop('external_handoff_request',None)
     if external_request:
         # Terminal transfer: persist the incoming turn and already-generated output
@@ -372,7 +437,7 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
 @router.post("/tester/attachments")
 async def upload_survey_answer(workspace_id: uuid.UUID, agent_id: uuid.UUID, request: Request,
     conversation_id: uuid.UUID = Form(...), survey_answer_token: uuid.UUID = Form(...),
-    files: List[UploadFile] = File(...), language: Optional[str] = Form(None), db: Session = Depends(get_db)):
+    files: List[UploadFile] = File(...), language: Optional[str] = Form(None), client_event_id:Optional[uuid.UUID]=Form(None), db: Session = Depends(get_db)):
     session, _, _, _ = access(request, db, workspace_id, mutation=True, agent_id=agent_id, lock=False)
     exists = db.scalar(select(AgentConversation.id).where(AgentConversation.id == conversation_id,
         AgentConversation.agent_id == agent_id, AgentConversation.workspace_id == workspace_id,
@@ -381,7 +446,7 @@ async def upload_survey_answer(workspace_id: uuid.UUID, agent_id: uuid.UUID, req
         raise HTTPException(404, "Conversation not found.")
     payloads = await attachments.read_uploads(files)
     body = TesterEvent(event="attachment_received", conversation_id=conversation_id, language=language,
-        survey_answer_token=survey_answer_token, attachment={"name": payloads[0]["file_name"], "media_type": "file"})
+        survey_answer_token=survey_answer_token, client_event_id=client_event_id, attachment={"name": payloads[0]["file_name"], "media_type": "file"})
     return await run_in_threadpool(process_event, workspace_id, agent_id, body, request, db, upload_payloads=payloads)
 
 

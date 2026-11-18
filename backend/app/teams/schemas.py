@@ -8,6 +8,8 @@ from app.teams.matching import normalize
 class TeamCreate(StrictModel):
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default='', max_length=2000)
+    role_id: Optional[uuid.UUID] = None
+    teamspace_ids: Optional[List[uuid.UUID]] = Field(default=None,max_length=200)
     alternative_names: List[str] = Field(default_factory=list, max_length=50)
     member_ids: Optional[List[uuid.UUID]] = Field(default=None,max_length=200)
 

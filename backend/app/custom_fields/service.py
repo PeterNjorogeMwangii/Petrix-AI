@@ -16,15 +16,15 @@ def payload(field):
     return {key: getattr(field, key) for key in ('id','key','scope','type','name','description','options','default_value','revision','created_at','updated_at')}
 
 
-def definitions(db, workspace_id):
-    return db.scalars(select(ConversationField).where(ConversationField.workspace_id == workspace_id,
+def definitions(db, workspace_id, scope='conversation'):
+    return db.scalars(select(ConversationField).where(ConversationField.workspace_id == workspace_id,ConversationField.scope == scope,
         ConversationField.archived.is_(False)).order_by(ConversationField.created_at, ConversationField.id)).all()
 
 
 def selected(db, workspace_id, ids, lock=False):
     query = select(ConversationField).where(ConversationField.workspace_id == workspace_id,
         ConversationField.id.in_([uuid.UUID(str(value)) for value in ids]), ConversationField.archived.is_(False),
-        ConversationField.type == 'single_select_grouped').order_by(ConversationField.id)
+        ConversationField.scope == 'conversation', ConversationField.type == 'single_select_grouped').order_by(ConversationField.id)
     if lock: query = query.with_for_update().execution_options(populate_existing=True)
     return db.scalars(query).all()
 
@@ -32,8 +32,9 @@ def selected(db, workspace_id, ids, lock=False):
 def references(db, workspace_id, field_id):
     documents = db.execute(select(Agent.name, WorkflowDocument.nodes).join(WorkflowDocument, WorkflowDocument.agent_id == Agent.id)
         .where(Agent.workspace_id == workspace_id)).all()
-    return [name for name,nodes in documents if any(node['kind'] == 'action' and node['type'] == 'auto_fill_field' and
-        str(field_id) in node['config'].get('field_ids', []) for node in walk(nodes))]
+    return [name for name,nodes in documents if any(node['kind']=='action' and
+        ((node['type']=='auto_fill_field' and str(field_id) in node['config'].get('field_ids',[])) or
+         (node['type']=='create_ticket' and any(item['field_id']==str(field_id) for item in node['config'].get('custom_fields',[])))) for node in walk(nodes))]
 
 
 def validate_references(db, workspace_id, nodes):
@@ -65,7 +66,7 @@ def audit(db, workspace_id, actor_id, action, name):
 
 
 def create(db, workspace_id, actor_id, body):
-    if len(definitions(db, workspace_id)) >= 100: raise HTTPException(409, 'A workspace supports up to 100 active conversation fields.')
+    if len(definitions(db, workspace_id,body.scope)) >= 100: raise HTTPException(409, 'A workspace supports up to 100 active fields per category.')
     unique_name(db, workspace_id, body.name)
     identifier = uuid.uuid4()
     key = re.sub(r'[^a-z0-9]+','_',body.name.lower()).strip('_')[:54]
@@ -80,8 +81,19 @@ def create(db, workspace_id, actor_id, body):
 def update(db, workspace_id, actor_id, identifier, body):
     field = get_field(db, workspace_id, identifier); check_revision(field,body.expected_revision)
     unique_name(db,workspace_id,body.name,field.id)
-    if field.type == 'single_select_grouped' and body.type != field.type and references(db,workspace_id,field.id):
-        raise HTTPException(409, 'This field is used by Auto Fill Field. Remove those references before changing its type.')
+    if body.type != field.type or body.scope != field.scope:
+        raise HTTPException(409, 'A field’s category and type cannot change after creation. Create a new field instead.')
+    if body.options != field.options:
+        from app.custom_fields.schemas import FieldCreate
+        from app.workflows.templates import TOKEN
+        documents=db.scalars(select(WorkflowDocument.nodes).join(Agent,Agent.id==WorkflowDocument.agent_id).where(Agent.workspace_id==workspace_id))
+        for nodes in documents:
+            for node in walk(nodes):
+                if node['kind']!='action' or node['type']!='create_ticket':continue
+                for item in node['config'].get('custom_fields',[]):
+                    if item['field_id']!=str(field.id) or (isinstance(item['value'],str) and TOKEN.search(item['value'])):continue
+                    try:FieldCreate.model_validate({**body.model_dump(exclude={'expected_revision'}),'default_value':item['value']})
+                    except ValueError:raise HTTPException(409,'Update Create Ticket overrides before removing an option they use.') from None
     values = body.model_dump(mode='json',exclude={'expected_revision'})
     if any(getattr(field,key)!=value for key,value in values.items()):
         for key,value in values.items(): setattr(field,key,value)
@@ -93,7 +105,7 @@ def remove(db, workspace_id, actor_id, body):
     fields = []
     for value in sorted(body.fields,key=lambda item:str(item.id)):
         field=get_field(db,workspace_id,value.id);check_revision(field,value.expected_revision)
-        if references(db,workspace_id,field.id): raise HTTPException(409,'Custom field “{}” is used by Auto Fill Field. Remove its workflow references before deleting it.'.format(field.name))
+        if references(db,workspace_id,field.id): raise HTTPException(409,'Custom field “{}” is used by a workflow action. Remove its workflow references before deleting it.'.format(field.name))
         fields.append(field)
     for field in fields:
         field.archived=True; field.revision+=1;field.updated_at=utcnow();audit(db,workspace_id,actor_id,'custom_field_deleted',field.name)
@@ -118,5 +130,5 @@ def with_defaults(db, workspace_id, conversation):
 
 
 def ticket_field_snapshot(conversation):
-    """Shared copy contract for the future ticket-conversion service."""
+    """Copy durable conversation assignments into a new support ticket."""
     return deepcopy(conversation.custom_fields or {})

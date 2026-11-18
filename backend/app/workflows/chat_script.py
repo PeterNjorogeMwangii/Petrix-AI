@@ -82,7 +82,7 @@ def parse_expression(source):
             json_value(node.value)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod) and isinstance(node.left, ast.Constant) and isinstance(node.left.value, str):
             raise ScriptError("Use text concatenation instead of percent formatting.")
-        if isinstance(node, ast.Name) and node.id.startswith("_"):
+        if isinstance(node, ast.Name) and node.id.startswith("_") and node.id != "_transferred_context":
             raise ScriptError("Private names are not available in chat scripts.")
         if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
             raise ScriptError("Private attributes are not available in chat scripts.")

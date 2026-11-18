@@ -107,8 +107,10 @@ def user_context(db: Session, user: User, workspace_id=None) -> dict:
     if not row:
         raise HTTPException(409, "This account has no workspace membership.")
     workspace, role = row
+    db.info["actor_id"] = user.id
+    from app.profile.service import user_summary
     return {
-        "user": {"id": str(user.id), "email": user.email, "full_name": user.full_name},
+        "user": user_summary(db,user),
         "workspace": workspace_payload(workspace, role, db),
         "next_path": "/app/agents" if workspace.setup_completed_at else "/onboarding/workspace",
     }
@@ -116,13 +118,29 @@ def user_context(db: Session, user: User, workspace_id=None) -> dict:
 
 def workspace_payload(workspace: Workspace, role: str, db: Optional[Session] = None) -> dict:
     from app.agent_service import can_manage
+    from app.workspace_settings.permissions import ALL, allowed
+    from app.workspace_settings.routes import branding_payload
+    if db:
+        from app.workspace_settings.permissions import workspace_grants, accessible_spaces, default_space, GROUPS
+        from app.models import Agent
+        from sqlalchemy import func
+        resolved=workspace_grants(db,workspace.id,role=role)
+        grants={key:key in resolved for key in ALL}
+        for key in ['view_ai_agents','manage_ai_agents']:
+            grants[key]=key in resolved or any(allowed(db,workspace.id,key,teamspace_id=space) for space in accessible_spaces(db,workspace.id))
+        for key,_ in GROUPS['Teamspace']:
+            grants[key]=allowed(db,workspace.id,key,teamspace_id=default_space(db,workspace.id))
+        agent_count=db.scalar(select(func.count()).select_from(Agent).where(Agent.workspace_id==workspace.id)) or 0
+    else:
+        grants={key:role in {'owner','admin'} for key in ALL};agent_count=0
     return {
         "id": str(workspace.id), "name": workspace.name, "industry": workspace.industry,
         "country_code": workspace.country_code, "website": workspace.website, "role": role,
         "setup_completed": workspace.setup_completed_at is not None,
-        "avatar_url": f"/api/workspaces/{workspace.id}/avatar" if workspace.avatar_data else None,
-        "permissions": {"manage_ai_agents": can_manage(db, workspace.id, role) if db else role in {"owner", "admin"}, "manage_workspace_roles": role in {"owner", "admin"}},
-        "subscription": {"plan_name": workspace.plan_name, "agent_limit": None, "language_limit": workspace.language_limit},
+        "avatar_url": f"/api/workspaces/{workspace.id}/avatar?v=" + __import__("hashlib").sha256(workspace.avatar_data).hexdigest()[:12] if workspace.avatar_data else None,
+        "permissions": grants,
+        "branding": branding_payload(db, workspace.id) if db else {},
+        "subscription": {"plan_name": workspace.plan_name, "agent_limit": None, "agent_count":agent_count, "language_limit": workspace.language_limit},
     }
 
 
@@ -151,6 +169,8 @@ def current_session(request: Request, db: Session) -> AuthSession:
     ))
     if not session:
         raise HTTPException(401, "Your session has expired. Please sign in again.")
+    from app.workspace_settings.security import enforce
+    enforce(request, db, session)
     return session
 
 

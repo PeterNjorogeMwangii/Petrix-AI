@@ -46,13 +46,14 @@ def options(workspace_id:uuid.UUID,request:Request,db:Session=Depends(get_db)):
 @router.get('/workspaces/{workspace_id}/members')
 def members(workspace_id:uuid.UUID,request:Request,db:Session=Depends(get_db)):
     _,_,role=access(request,db,workspace_id)
-    return {'members':[{key:p[key] for key in ('id','name','email','role')} for p in service.roster(db,workspace_id)],'can_manage':role in {'owner','admin'}}
+    return {'members':[{key:p[key] for key in ('id','name','email','role')} for p in service.roster(db,workspace_id)],'can_manage':__import__('app.workspace_settings.permissions',fromlist=['allowed']).allowed(db,workspace_id,'manage_users')}
 
 
 @router.post('/workspaces/{workspace_id}/members',status_code=201)
 def add_member(workspace_id:uuid.UUID,body:MemberAdd,request:Request,db:Session=Depends(get_db)):
     session,_,role=access(request,db,workspace_id,mutation=True)
-    if role not in {'owner','admin'}:raise HTTPException(403,'Only owners and administrators can add workspace members.')
+    from app.workspace_settings.permissions import require
+    require(db,workspace_id,'manage_users')
     agent_service.workspace_for(db,workspace_id,session.user_id,lock=True)
     user=db.scalar(select(User).where(User.email==body.email.strip().lower()))
     if not user:raise HTTPException(422,'This person needs to create a Petrix AI account first. Then add their account email here.')
@@ -88,29 +89,38 @@ def profile(workspace_id:uuid.UUID,request:Request,db:Session=Depends(get_db)):
 @router.post('/workspaces/{workspace_id}/inbox/profile')
 def update_profile(workspace_id:uuid.UUID,body:ProfileUpdate,request:Request,db:Session=Depends(get_db)):
     session,_,_=access(request,db,workspace_id,mutation=True)
-    return service.update_profile(db,workspace_id,session,body)
+    service.update_profile(db,workspace_id,session,body)
+    from app.teamspace.assignment import drain
+    drain(db,workspace_id)
+    return service.profile_payload(db,workspace_id,session.user_id)
 
 
 @router.post('/workspaces/{workspace_id}/inbox/heartbeat')
 def heartbeat(workspace_id:uuid.UUID,request:Request,db:Session=Depends(get_db)):
     session,_,_=access(request,db,workspace_id,mutation=True)
-    return service.heartbeat(db,workspace_id,session)
+    service.heartbeat(db,workspace_id,session)
+    from app.teamspace.assignment import drain
+    drain(db,workspace_id)
+    return service.profile_payload(db,workspace_id,session.user_id)
 
 
 @router.get('/workspaces/{workspace_id}/inbox/chats')
-def list_chats(workspace_id:uuid.UUID,request:Request,db:Session=Depends(get_db)):
+def list_chats(workspace_id:uuid.UUID,request:Request,tag:uuid.UUID=Query(None),group:uuid.UUID=Query(None),custom_key:str=Query(None,max_length=100),custom_value:str=Query(None,max_length=4000),db:Session=Depends(get_db)):
     session,_,_=access(request,db,workspace_id)
     # Bound the initial queue page, exposing only conversations this person may handle.
     external_ids=select(ExternalConversation.conversation_id).where(ExternalConversation.workspace_id==workspace_id,ExternalConversation.status.in_(['sending','transferred','uncertain']))
     conversations=db.scalars(select(AgentConversation).where(AgentConversation.workspace_id==workspace_id,
-        ((AgentConversation.live_status.in_(['pending','active','closed'])) & ((AgentConversation.live_status=='pending') | (AgentConversation.live_assigned_user_id==session.user_id))) | AgentConversation.id.in_(external_ids)).order_by(AgentConversation.live_updated_at.desc(),AgentConversation.id.desc()).limit(500)).all()
+        (AgentConversation.live_status.in_(['pending','active','closed']) | AgentConversation.id.in_(external_ids))).order_by(AgentConversation.live_updated_at.desc(),AgentConversation.id.desc()).limit(500)).all()
     people=service.roster(db,workspace_id);cache={};visible=[]
     for conversation in conversations:
+        if not service.can_view(db,conversation,session.user_id):continue
         if conversation.workflow_state.get('external_handoff',{}).get('status') in {'sending','transferred','uncertain'} and not service.can_view(db,conversation,session.user_id):continue
         if conversation.live_status=='pending':
             routing=conversation.live_context['routing'];key=json.dumps(routing,sort_keys=True)
             if key not in cache:cache[key]={person['id'] for person in service.eligible(db,workspace_id,routing,people=people)}
-            if str(session.user_id) not in cache[key]:continue
+            if str(session.user_id) not in cache[key] and not __import__('app.workspace_settings.permissions',fromlist=['has_custom']).has_custom(db,workspace_id,session.user_id):continue
+        from app.teamspace.records import matches_filters
+        if not matches_filters(db,workspace_id,'chats',conversation,tag,group,custom_key,custom_value):continue
         visible.append(service.summary(conversation))
     return {'chats':visible}
 

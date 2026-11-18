@@ -16,3 +16,5 @@ pycountry==24.6.1
 groq>=1.0.0,<1.1
 fastembed==0.6.1
 numpy==1.26.4
+
+pypdf==6.21.4

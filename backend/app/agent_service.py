@@ -18,13 +18,12 @@ DEFAULT_PERSONA = "You are a helpful assistant for this workspace. Be clear, pro
 
 
 def can_manage(db, workspace_id, role):
-    if role == "owner":
-        return True
-    permission = db.scalar(select(RolePermission).where(RolePermission.workspace_id == workspace_id, RolePermission.role == role).execution_options(populate_existing=True))
-    return permission.manage_ai_agents if permission else role == "admin"
+    from app.workspace_settings.permissions import allowed
+    return allowed(db, workspace_id, 'manage_ai_agents', role=role)
 
 
 def workspace_for(db, workspace_id, user_id, manage=False, lock=False):
+    db.info["actor_id"] = user_id
     query = select(Workspace, Membership.role).join(Membership, Membership.workspace_id == Workspace.id).where(
         Workspace.id == workspace_id, Membership.user_id == user_id
     )
@@ -102,7 +101,7 @@ def agent_payload(agent):
     payload = configuration(agent)
     payload.pop("avatar_base64")
     payload.update({
-        "id": str(agent.id), "workspace_id": str(agent.workspace_id), "revision": agent.revision,
+        "id": str(agent.id), "teamspace_id": str(agent.teamspace_id) if agent.teamspace_id else None, "workspace_id": str(agent.workspace_id), "revision": agent.revision,
         "avatar_url": "/api/workspaces/{}/agents/{}/avatar?v={}".format(agent.workspace_id, agent.id, agent.revision) if agent.avatar_data else None,
         "created_at": agent.created_at.isoformat(), "updated_at": agent.updated_at.isoformat(),
     })
@@ -124,6 +123,9 @@ def create_agent(db, workspace, actor_id, name, language="en", avatar=None, conf
         persona=DEFAULT_PERSONA, llm_enabled=True, voice_enabled=False, voice_name="", voice_speed=1.0, revision=1, avatar_data=avatar)
     if config:
         apply_configuration(agent, config, workspace)
+    if not agent.teamspace_id:
+        from app.workspace_settings.permissions import default_space
+        agent.teamspace_id = default_space(db, workspace.id)
     db.add(agent)
     db.flush()
     from app.workflows.service import initialize
@@ -133,6 +135,8 @@ def create_agent(db, workspace, actor_id, name, language="en", avatar=None, conf
 
 
 def initialize_workspace(db, workspace, actor_id):
+    from app.workspace_settings.permissions import bootstrap
+    bootstrap(db,workspace.id)
     db.add(ChatAssignment(workspace_id=workspace.id,mode="manual",max_active_chats=5,revision=1))
     for role in ("owner", "admin", "member"):
         db.add(RolePermission(workspace_id=workspace.id, role=role, manage_ai_agents=role != "member"))

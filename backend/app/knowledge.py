@@ -1,4 +1,4 @@
-"""Small, explicit agent knowledge documents; text only in this release."""
+"""Legacy revision-safe snippets; the expanded Knowledge base retains this API."""
 import uuid
 from typing import List
 
@@ -49,6 +49,8 @@ def save_document(db, agent, actor_id, body):
         document.sources = sources; document.revision += 1; document.updated_at = utcnow()
         db.add(AgentChange(workspace_id=agent.workspace_id, agent_id=agent.id, agent_name=agent.name, actor_id=actor_id,
             action="knowledge_saved", summary="Knowledge revision {} saved.".format(document.revision)))
+    from app.agent_knowledge.service import sync_legacy
+    sync_legacy(db, agent, sources)
     db.commit()
     return document_payload(document, agent.id)
 

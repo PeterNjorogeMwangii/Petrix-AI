@@ -19,8 +19,10 @@ def access(request, db, workspace_id, mutation=False):
     session = current_session(request, db)
     if mutation: require_csrf(request, session)
     workspace, role = workspace_for(db, workspace_id, session.user_id, lock=mutation)
-    if role not in {"owner", "admin"}:
-        raise HTTPException(403, "Only workspace owners and administrators can manage database connections.")
+    from app.workspace_settings.permissions import require, membership
+    member=membership(db,workspace_id,session.user_id)
+    if member and not member.custom_role_id and role not in {"owner","admin"}:raise HTTPException(403,"Only workspace administrators or explicitly authorized custom roles can manage database connections.")
+    require(db,workspace_id,"manage_db_connections")
     return workspace
 
 
@@ -36,7 +38,7 @@ def list_connections(workspace_id: uuid.UUID, request: Request, db: Session = De
 def connection_options(workspace_id: uuid.UUID, request: Request, db: Session = Depends(get_db)):
     session = current_session(request, db)
     _, role = workspace_for(db, workspace_id, session.user_id)
-    if not can_manage(db, workspace_id, role): raise HTTPException(403, "You need the Manage AI Agents permission.")
+    if not __import__('app.workspace_settings.permissions',fromlist=['allowed']).allowed(db,workspace_id,'manage_db_connections'): raise HTTPException(403, "You need the Manage AI Agents permission.")
     connections = db.scalars(select(DatabaseConnection).where(DatabaseConnection.workspace_id == workspace_id,
         DatabaseConnection.status == "verified").order_by(DatabaseConnection.name)).all()
     return {"connections": [{"id": item.id, "name": item.name, "type": item.type} for item in connections]}

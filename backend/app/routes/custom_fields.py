@@ -1,5 +1,5 @@
 import uuid
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Request, Response, Query
 from sqlalchemy.orm import Session
 from app import agent_service
 from app.database import get_db
@@ -10,10 +10,12 @@ from app.custom_fields.schemas import FieldCreate, FieldUpdate, DeleteFields
 router=APIRouter(prefix='/api/workspaces/{workspace_id}/custom-fields',tags=['Custom fields'])
 
 @router.get('')
-def list_fields(workspace_id:uuid.UUID,request:Request,db:Session=Depends(get_db)):
+def list_fields(workspace_id:uuid.UUID,request:Request,scope:__import__("typing").Literal["conversation","person"]="conversation",db:Session=Depends(get_db)):
     _,_,role,_=access(request,db,workspace_id)
-    return {'fields':[service.payload(field) for field in service.definitions(db,workspace_id)],
-        'can_manage':agent_service.can_manage(db,workspace_id,role)}
+    from app.workspace_settings import permissions as p
+    if p.has_custom(db,workspace_id):p.require(db,workspace_id,'manage_custom_fields',teamspace_id=p.default_space(db,workspace_id))
+    return {'fields':[service.payload(field) for field in service.definitions(db,workspace_id,scope)],
+        'can_manage':__import__('app.workspace_settings.permissions',fromlist=['allowed']).allowed(db,workspace_id,'manage_custom_fields',teamspace_id=__import__('app.workspace_settings.permissions',fromlist=['default_space']).default_space(db,workspace_id))}
 
 @router.get('/options')
 def field_options(workspace_id:uuid.UUID,request:Request,db:Session=Depends(get_db)):

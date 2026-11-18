@@ -12,7 +12,7 @@ def definitions(db, workspace_id):
 
 def payload(team):
     return {key: getattr(team, key) for key in ('id', 'name', 'description', 'alternative_names',
-        'revision', 'created_at', 'updated_at','member_ids')}
+        'revision', 'created_at', 'updated_at','member_ids','role_id','teamspace_ids')}
 
 
 def unique_names(db, workspace_id, body, identifier=None):
@@ -46,7 +46,8 @@ def create(db, workspace_id, actor_id, body):
         raise HTTPException(409, 'A workspace supports up to 200 active teams.')
     unique_names(db, workspace_id, body)
     members=validated_members(db,workspace_id,body.member_ids or [])
-    team = SupportTeam(workspace_id=workspace_id, member_ids=members, **body.model_dump(mode='json',exclude={'member_ids'}))
+    extra=role_assignment(db,workspace_id,actor_id,body)
+    team = SupportTeam(workspace_id=workspace_id, member_ids=members, **body.model_dump(mode='json',exclude={'member_ids','role_id','teamspace_ids'}),**extra)
     db.add(team)
     audit(db, workspace_id, actor_id, 'created', body.name)
     db.commit()
@@ -56,7 +57,8 @@ def create(db, workspace_id, actor_id, body):
 def update(db, workspace_id, actor_id, identifier, body):
     team = get_team(db, workspace_id, identifier, body.expected_revision)
     unique_names(db, workspace_id, body, identifier)
-    values = body.model_dump(mode='json', exclude={'expected_revision','member_ids'})
+    values = body.model_dump(mode='json', exclude={'expected_revision','member_ids','role_id','teamspace_ids'})
+    if {'role_id','teamspace_ids'}&body.model_fields_set:values.update(role_assignment(db,workspace_id,actor_id,body))
     if body.member_ids is not None:
         values['member_ids']=validated_members(db,workspace_id,body.member_ids)
         if values['member_ids']!=team.member_ids:protect_live_members(db,workspace_id,team)
@@ -76,6 +78,11 @@ def remove(db, workspace_id, actor_id, identifier, body):
     for nodes in db.scalars(select(WorkflowDocument.nodes).join(Agent,Agent.id==WorkflowDocument.agent_id).where(Agent.workspace_id==workspace_id)):
         if any(n['kind']=='action' and n['type']=='live_agent_handoff' and str(team.id) in n['config']['team_ids'] for n in walk(nodes)):
             raise HTTPException(409,'This team is used by Live Agent Handoff. Remove its workflow references before deleting it.')
+    from app.tickets.settings import references
+    from app.models import SupportTicket
+    if references(db,workspace_id,'teams',team.id):raise HTTPException(409,'Remove this team from Create Ticket actions before deleting it.')
+    if db.scalar(select(SupportTicket.id).where(SupportTicket.workspace_id==workspace_id,SupportTicket.assignee_type=='team',SupportTicket.assignee_id==team.id,SupportTicket.status.in_(['open','in_progress']))):
+        raise HTTPException(409,'Reassign or finish this team’s open tickets before deleting it.')
     protect_live_members(db,workspace_id,team)
     team.archived = True
     team.revision += 1
@@ -115,3 +122,14 @@ def protect_live_members(db,workspace_id,team):
     for conversation in db.scalars(select(AgentConversation).where(AgentConversation.workspace_id==workspace_id,AgentConversation.live_status.in_(['pending','active']))):
         if set(team.member_ids or []).intersection(conversation.live_context.get('eligible_ids',[])):
             raise HTTPException(409,'This team has a pending or active live chat. Finish those conversations before changing its members or deleting it.')
+
+
+def role_assignment(db,workspace_id,actor_id,body):
+    from app.workspace_settings import permissions as p
+    from app.models import WorkspaceRole,Teamspace
+    role=db.get(WorkspaceRole,body.role_id) if body.role_id else None
+    if body.role_id and (not role or role.workspace_id!=workspace_id or role.kind!='team'):raise HTTPException(422,'Select a Team role from this workspace.')
+    if role and not p.allowed(db,workspace_id,'manage_workspace_roles',actor_id) and not set(role.permissions)<=p.workspace_grants(db,workspace_id,actor_id):raise HTTPException(403,'You cannot assign a team role with permissions you do not hold.')
+    spaces=None if body.teamspace_ids is None else list(map(str,body.teamspace_ids))
+    if spaces is not None and not set(spaces)<={str(i) for i in db.scalars(select(Teamspace.id).where(Teamspace.workspace_id==workspace_id))}:raise HTTPException(422,'Select teamspaces in this workspace.')
+    return {'role_id':role.id if role else None,'teamspace_ids':spaces}

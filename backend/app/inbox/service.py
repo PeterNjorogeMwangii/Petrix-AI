@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from app import agent_service
 from app.core.security import utcnow
-from app.models import AgentChange, AgentConversation, AgentMessage, AuthSession, ChatAssignment, Membership, SupportAgent, SupportTeam, User
+from app.models import Agent,AgentChange, AgentConversation, AgentMessage, AuthSession, ChatAssignment, Membership, SupportAgent, SupportTeam, User
 
 PRESENCE_SECONDS = 90
 
@@ -23,7 +23,9 @@ def assignment(db, workspace_id, lock=False):
 def ensure_profile(db,workspace_id,user_id):
     value=db.get(SupportAgent,(workspace_id,user_id))
     if not value:
-        value=SupportAgent(workspace_id=workspace_id,user_id=user_id,languages=['en'],available=False,revision=1)
+        from app.models import UserProfile
+        preference=db.get(UserProfile,user_id)
+        value=SupportAgent(workspace_id=workspace_id,user_id=user_id,languages=[preference.language if preference else 'en'],available=False,revision=1)
         db.add(value);db.flush()
     return value
 
@@ -32,6 +34,9 @@ def roster(db,workspace_id):
     members=db.execute(select(User,Membership.role).join(Membership,Membership.user_id==User.id)
         .where(Membership.workspace_id==workspace_id).order_by(User.created_at,User.id)).all()
     profiles={p.user_id:p for p in db.scalars(select(SupportAgent).where(SupportAgent.workspace_id==workspace_id))}
+    from app.models import UserProfile
+    account_profiles={p.user_id:p for p in db.scalars(select(UserProfile).where(UserProfile.user_id.in_([u.id for u,_ in members])))}
+    preferences={key:value.presence for key,value in account_profiles.items()}
     teams=db.scalars(select(SupportTeam).where(SupportTeam.workspace_id==workspace_id,SupportTeam.archived.is_(False))).all()
     session_ids=[p.presence_session_id for p in profiles.values() if p.presence_session_id]
     now=utcnow()
@@ -42,22 +47,27 @@ def roster(db,workspace_id):
     for user,role in members:
         profile=profiles.get(user.id)
         team_ids=[str(team.id) for team in teams if str(user.id) in (team.member_ids or [])]
-        online=bool(profile and profile.available and profile.last_seen_at and profile.last_seen_at>=now-timedelta(seconds=PRESENCE_SECONDS)
+        online=bool(preferences.get(user.id,'online')=='online' and profile and profile.available and profile.last_seen_at and profile.last_seen_at>=now-timedelta(seconds=PRESENCE_SECONDS)
             and sessions.get(profile.presence_session_id)==user.id and team_ids)
         values.append({'id':str(user.id),'name':user.full_name or user.email.split('@')[0], 'email':user.email,'role':role,
-            'team_ids':team_ids,'languages':profile.languages if profile else ['en'],'available':online,
-            'active_chats':loads.get(user.id,0),'last_assigned_at':profile.last_assigned_at if profile else None})
+            'team_ids':team_ids,'languages':profile.languages if profile else [account_profiles[user.id].language if user.id in account_profiles else 'en'],'available':online,
+            'presence':preferences.get(user.id,'online'),'active_chats':loads.get(user.id,0),'last_assigned_at':profile.last_assigned_at if profile else None})
     return values
 
 
-def eligible(db,workspace_id,routing,people=None):
+def eligible(db,workspace_id,routing,people=None,space_id=None):
     people=[p for p in (roster(db,workspace_id) if people is None else people) if p['team_ids']]
     if routing['assignment_mode']=='specific':
         teams=set(routing.get('team_ids',[]));users=set(routing.get('user_ids',[]))
         people=[p for p in people if p['id'] in users or teams.intersection(p['team_ids'])]
     if routing.get('assign_by_language'):
         people=[p for p in people if routing['language'] in p['languages']]
-    return people
+    from app.workspace_settings import permissions as grants
+    space_id=space_id or grants.default_space(db,workspace_id)
+    def permitted(person):
+        identifier=uuid.UUID(person['id']);teams=routing.get('team_ids',[]) or [None]
+        return all(any(grants.record_allowed(db,workspace_id,identifier,'livechats',action,identifier,t,space_id) for t in teams) for action in ['view','manage'])
+    return [person for person in people if permitted(person)]
 
 
 def profile_payload(db,workspace_id,user_id):
@@ -74,8 +84,14 @@ def update_profile(db,workspace_id,session,body):
     if body.available and not next((p['team_ids'] for p in roster(db,workspace_id) if p['id']==str(session.user_id)),[]):
         raise HTTPException(422,'Join a support team in Settings → Teams before becoming available.')
     profile=profile or ensure_profile(db,workspace_id,session.user_id)
+    was_available=profile.available
+    if body.available:
+        from app.profile.service import profile as account_profile
+        account=account_profile(db,session.user_id)
+        if account.presence!='online':account.presence='online';account.revision+=1
     if profile.languages!=body.languages or profile.available!=body.available:
         profile.languages=body.languages;profile.available=body.available;profile.revision+=1
+    if body.available and (not was_available or not profile.online_since or not profile.last_seen_at or profile.last_seen_at<utcnow()-timedelta(seconds=PRESENCE_SECONDS)):profile.online_since=utcnow()
     profile.last_seen_at=utcnow();profile.presence_session_id=session.id
     db.commit();return profile_payload(db,workspace_id,session.user_id)
 
@@ -83,14 +99,18 @@ def update_profile(db,workspace_id,session,body):
 def heartbeat(db,workspace_id,session):
     profile=db.get(SupportAgent,(workspace_id,session.user_id))
     if profile and profile.available:
+        if not profile.last_seen_at or profile.last_seen_at<utcnow()-timedelta(seconds=PRESENCE_SECONDS):profile.online_since=utcnow()
         profile.last_seen_at=utcnow();profile.presence_session_id=session.id;db.commit()
     return profile_payload(db,workspace_id,session.user_id)
 
 
 class HandoffService:
-    def __init__(self,db,workspace_id):self.db,self.workspace_id=db,workspace_id
+    def __init__(self,db,workspace_id,conversation=None):self.db,self.workspace_id,self.conversation=db,workspace_id,conversation
 
     def offer(self,config,context):
+        from app.teamspace.assignment import offer
+        result=offer(self.db,self.workspace_id,config,context,self.conversation)
+        if result is not None:return result
         settings=assignment(self.db,self.workspace_id,lock=True)
         routing={key:deepcopy(config[key]) for key in ('assignment_mode','user_ids','team_ids','assign_by_language')}
         routing['language']=context.language
@@ -129,6 +149,13 @@ def apply_handoff(db,conversation,state):
 
 
 def can_view(db,conversation,user_id):
+    from app.workspace_settings import permissions as grants
+    if grants.has_custom(db,conversation.workspace_id,user_id):
+        if conversation.live_status=='pending':return str(user_id) in {person['id'] for person in eligible(db,conversation.workspace_id,conversation.live_context['routing'],space_id=__import__('app.teamspace.records',fromlist=['record_space']).record_space(db,'chats',conversation))}
+        agent=db.get(Agent,conversation.agent_id) if conversation.agent_id else None
+        teams=(conversation.live_context or {}).get('routing',{}).get('team_ids',[])
+        return any(grants.record_allowed(db,conversation.workspace_id,user_id,'livechats','view',conversation.live_assigned_user_id,t,agent.teamspace_id if agent else None) for t in (teams or [None]))
+
     if not db.scalar(select(Membership.id).where(Membership.workspace_id==conversation.workspace_id,Membership.user_id==user_id)):return False
     from app.models import ExternalConversation
     external=db.get(ExternalConversation,conversation.id)
@@ -146,7 +173,16 @@ def chat(db,workspace_id,identifier,user_id,lock=False):
     if lock:query=query.with_for_update().execution_options(populate_existing=True)
     conversation=db.scalar(query)
     if not conversation or not can_view(db,conversation,user_id):raise HTTPException(404,'Live chat not found.')
+    if lock:require_manage(db,conversation,user_id)
     return conversation
+
+
+def require_manage(db,conversation,user_id):
+    from app.workspace_settings import permissions as grants
+    if not grants.has_custom(db,conversation.workspace_id,user_id):return
+    agent=db.get(Agent,conversation.agent_id) if conversation.agent_id else None
+    teams=(conversation.live_context or {}).get('routing',{}).get('team_ids',[])
+    if not any(grants.record_allowed(db,conversation.workspace_id,user_id,'livechats','manage',user_id if conversation.live_status=='pending' else conversation.live_assigned_user_id,t,agent.teamspace_id if agent else None) for t in (teams or [None])):raise HTTPException(403,'Your role cannot manage this livechat.')
 
 
 def public_status(conversation):
@@ -173,15 +209,21 @@ def summary(conversation):
         return {'id':str(conversation.id),'agent_id':str(conversation.agent_id) if conversation.agent_id else None,'agent_name':conversation.agent_name,'language':conversation.workflow_state.get('language','en'),
             'created_at':conversation.created_at.isoformat(),'updated_at':external['updated_at'],'status':'external','revision':external['revision'],'assigned_user_id':None,'external_handoff':external}
     return {'id':str(conversation.id),'agent_id':str(conversation.agent_id) if conversation.agent_id else None,'agent_name':conversation.agent_name,
-        'created_at':conversation.created_at.isoformat(),'language':conversation.workflow_state.get('language','en'),**public_status(conversation)}
+        'created_at':conversation.created_at.isoformat(),'language':conversation.workflow_state.get('language','en'),'priority':bool(conversation.live_context.get('priority')),**public_status(conversation)}
 
 
 def claim(db,conversation,session,expected):
     settings=assignment(db,conversation.workspace_id,lock=True)
     if conversation.live_revision!=expected or conversation.live_status!='pending':raise HTTPException(409,'This chat was already claimed or changed. Reload the queue.')
-    person=next((p for p in eligible(db,conversation.workspace_id,conversation.live_context['routing']) if p['id']==str(session.user_id)),None)
+    person=next((p for p in eligible(db,conversation.workspace_id,conversation.live_context['routing'],space_id=__import__('app.teamspace.records',fromlist=['record_space']).record_space(db,'chats',conversation)) if p['id']==str(session.user_id)),None)
     if not person or not person['available']:raise HTTPException(409,'Become available in Inbox before claiming this chat.')
-    if person['active_chats']>=settings.max_active_chats:raise HTTPException(409,'You have reached the active chat limit.')
+    from app.teamspace.assignment import policy
+    from app.teamspace.records import record_space,check_ban
+    check_ban(db,conversation)
+    current=policy(db,conversation.workspace_id,record_space(db,'chats',conversation)).assignment
+    voluntary=current.get('algorithm',1)>=2 and current.get('mode')=='manual'
+    ignore=conversation.live_context.get('priority') and current.get('priority_type')=='ignore_limit'
+    if not voluntary and not ignore and person['active_chats']>=current.get('limit',settings.max_active_chats):raise HTTPException(409,'You have reached the active chat limit.')
     conversation.live_status='active';conversation.live_assigned_user_id=session.user_id;conversation.live_revision+=1;conversation.live_updated_at=utcnow()
     ensure_profile(db,conversation.workspace_id,session.user_id).last_assigned_at=utcnow()
     audit(db,conversation,session.user_id,'claimed');db.commit()
@@ -195,11 +237,17 @@ def require_assignee(conversation,user_id,expected):
 def reply(db,conversation,session,body):
     duplicate=db.scalar(select(AgentMessage).where(AgentMessage.conversation_id==conversation.id,
         AgentMessage.message_data['client_message_id'].as_string()==str(body.client_message_id)))
-    if duplicate:return
+    if duplicate:
+        if duplicate.author_id!=session.user_id or duplicate.content!=body.content or ('alias_id' in body.model_fields_set and duplicate.message_data.get('alias_id')!=(str(body.alias_id) if body.alias_id else None)):raise HTTPException(409,'This reply request ID was already used with different contents.')
+        return
+    from app.teamspace.records import check_ban
+    check_ban(db,conversation)
     require_assignee(conversation,session.user_id,body.expected_revision)
-    user=db.get(User,session.user_id)
-    db.add(AgentMessage(conversation_id=conversation.id,role='assistant',content=body.content,
-        message_data={'source':'live_agent','author_name':user.full_name or 'Support agent','client_message_id':str(body.client_message_id),'quick_replies':[]}))
+    from app.profile import service as personas
+    identity=personas.snapshot(db,conversation.workspace_id,'chats',conversation.id,session.user_id,body.alias_id,'alias_id' in body.model_fields_set)
+    personas.remember(db,conversation.workspace_id,'chats',conversation.id,session.user_id,uuid.UUID(identity['alias_id']) if identity['alias_id'] else None)
+    db.add(AgentMessage(conversation_id=conversation.id,author_id=session.user_id,role='assistant',content=body.content,
+        message_data={'source':'live_agent','author_name':identity['name'],'alias_id':identity['alias_id'],'avatar_url':identity['avatar_url'],'client_message_id':str(body.client_message_id),'quick_replies':[]}))
     conversation.live_updated_at=utcnow();db.commit()
 
 

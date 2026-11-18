@@ -280,3 +280,12 @@ def test_sdk_timeout_maps_to_timeout_path_without_retry(monkeypatch):
     client, _ = mocked_provider(monkeypatch, timed_out)
     assert client.process('openai/gpt-oss-20b', [{'role':'user','content':'Hello'}], 1, 1) == ProcessingResult('timeout', error='timeout')
     assert len(calls) == 1
+
+@pytest.mark.parametrize('text,expected',[('{"financial_institution":"Sample Bank","date":null}',{'financial_institution':'Sample Bank','date':None}),('```json\n{"x":1}\n```',None),('{"x":1,"x":2}',None),('[1,2]',None),('{"x":NaN}',None)])
+def test_json_output_saves_fields_or_follows_error_without_stale_values(text,expected):
+    agent,_=setup_tree();client=StubProcessing(ProcessingResult('success',text=text));context=ActionContext(agent,'en',{}, {'variables':{'complaint_details':'stale'}},llm_client=client)
+    config=LLMProcessingConfig.model_validate(llm(output_format='json')['config']).model_dump(mode='json')
+    outcome=process(config,context)
+    assert context.variables['complaint_details']==expected
+    assert outcome.outcome==('success' if expected is not None else 'error')
+    if expected is None:assert outcome.error=='invalid_json_response'

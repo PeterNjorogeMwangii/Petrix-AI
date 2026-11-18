@@ -1,5 +1,5 @@
 import uuid
-from typing import List, Literal
+from typing import List, Literal, Optional
 from pydantic import Field, StrictBool, StrictInt, field_validator, model_validator
 from app.agent_schemas import StrictModel, LANGUAGE_CODES
 
@@ -28,6 +28,7 @@ class ChatMutation(StrictModel):
 
 
 class ChatReply(ChatMutation):
+    alias_id: Optional[uuid.UUID]=None
     content: str = Field(min_length=1, max_length=4000)
     client_message_id: uuid.UUID
 

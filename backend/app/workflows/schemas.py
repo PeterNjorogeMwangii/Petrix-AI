@@ -58,6 +58,7 @@ class AttachmentEvent(StrictModel):
 
 
 class TesterEvent(StrictModel):
+    client_event_id: Optional[uuid.UUID] = None
     event: Literal["chat_started", "message_received", "attachment_received", "chat_closed", "collect_feedback", "chat_timeout", "ai_timeout"]
     conversation_id: Optional[uuid.UUID] = None
     language: Optional[str] = None

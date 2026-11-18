@@ -11,10 +11,14 @@ from app.workflows.actions.branch.config import BranchConfig
 from app.workflows.actions.branch.handler import execute as branch
 from app.workflows.actions.collect_feedback.config import CollectFeedbackConfig
 from app.workflows.actions.collect_feedback.handler import execute as collect_feedback
+from app.workflows.actions.create_ticket.config import CreateTicketConfig
+from app.workflows.actions.create_ticket.handler import execute as create_ticket
 from app.workflows.actions.close_chat.config import CloseChatConfig
 from app.workflows.actions.close_chat.handler import execute as close_chat
 from app.workflows.actions.jump.config import JumpConfig
 from app.workflows.actions.jump.handler import execute as jump
+from app.workflows.actions.ai_agent_handoff.config import AIAgentHandoffConfig
+from app.workflows.actions.ai_agent_handoff.handler import execute as ai_agent_handoff
 from app.workflows.actions.external_handoff.config import ExternalHandoffConfig
 from app.workflows.actions.external_handoff.handler import execute as external_handoff
 from app.workflows.actions.live_agent_handoff.config import LiveAgentHandoffConfig
@@ -51,11 +55,11 @@ def config_for(action_type):
     return {"send_message": SendMessageConfig, "send_attachment": SendAttachmentConfig, "show_carousel": ShowCarouselConfig, "set_variable": SetVariableConfig, "jump": JumpConfig,
         "ask_survey": AskSurveyConfig, "branch": BranchConfig, "send_api": SendAPIConfig, "sql_query": SQLQueryConfig,
         "switch_language": SwitchLanguageConfig, "collect_feedback": CollectFeedbackConfig, "close_chat": CloseChatConfig,
-        "llm_processing": LLMProcessingConfig, "auto_fill_field": AutoFillFieldConfig, "auto_team_match": AutoTeamMatchConfig, "send_graph": SendGraphConfig, "live_agent_handoff": LiveAgentHandoffConfig, "external_handoff": ExternalHandoffConfig}[action_type]
+        "llm_processing": LLMProcessingConfig, "auto_fill_field": AutoFillFieldConfig, "auto_team_match": AutoTeamMatchConfig, "send_graph": SendGraphConfig, "live_agent_handoff": LiveAgentHandoffConfig, "external_handoff": ExternalHandoffConfig, "ai_agent_handoff": AIAgentHandoffConfig, "create_ticket": CreateTicketConfig}[action_type]
 
 
 def handler_for(action_type):
     return {"send_message": send_message, "send_attachment": send_attachment, "show_carousel": show_carousel, "set_variable": set_variable, "jump": jump,
         "ask_survey": ask_survey, "branch": branch, "send_api": send_api, "sql_query": sql_query,
         "switch_language": switch_language, "collect_feedback": collect_feedback, "close_chat": close_chat,
-        "llm_processing": llm_processing, "auto_fill_field": auto_fill_field, "auto_team_match": auto_team_match, "send_graph": send_graph, "live_agent_handoff": live_agent_handoff, "external_handoff": external_handoff}[action_type]
+        "llm_processing": llm_processing, "auto_fill_field": auto_fill_field, "auto_team_match": auto_team_match, "send_graph": send_graph, "live_agent_handoff": live_agent_handoff, "external_handoff": external_handoff, "ai_agent_handoff": ai_agent_handoff, "create_ticket": create_ticket}[action_type]

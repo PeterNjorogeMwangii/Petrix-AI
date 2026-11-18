@@ -1,2 +1,1 @@
-"""Reserved action module; configuration and execution will be added later."""
-DEFINITION = {"type":"create_ticket","name":"Create ticket","group":"Handoffs","description":"Open a support ticket.","available": False}
+DEFINITION={'type':'create_ticket','name':'Create ticket','group':'Handoffs','description':'Create a support ticket and optionally send initial emails.','available':True}

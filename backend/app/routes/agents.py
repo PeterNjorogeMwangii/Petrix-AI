@@ -21,10 +21,24 @@ router = APIRouter(prefix="/api", tags=["AI agents"])
 
 def access(request, db, workspace_id, mutation=False, agent_id=None, lock=True):
     session = current_session(request, db)
-    if mutation:
-        require_csrf(request, session)
-    workspace, role = service.workspace_for(db, workspace_id, session.user_id, manage=mutation, lock=mutation and lock)
+    if mutation:require_csrf(request, session)
+    workspace, role = service.workspace_for(db, workspace_id, session.user_id, lock=mutation and lock)
     agent = service.agent_for(db, workspace_id, agent_id, lock=mutation and lock) if agent_id else None
+    from app.workspace_settings import permissions as grants
+    path=request.url.path;key=None;space=None
+    if '/ticket-settings/' in path:
+        key=('manage_' if mutation else 'view_')+('tags' if any('/'+v in path for v in ['tags','groups']) else 'email');space=grants.default_space(db,workspace_id)
+    elif '/custom-fields' in path:
+        if mutation:key='manage_custom_fields';space=grants.default_space(db,workspace_id)
+    elif '/teams' in path:
+        if mutation:key='manage_teams'
+    elif '/external-integrations' in path:key='manage_workspace'
+    elif path.endswith('/roles'):key='manage_workspace_roles'
+    elif '/agents' in path:key='manage_ai_agents' if mutation else 'view_ai_agents';space=agent.teamspace_id if agent else grants.default_space(db,workspace_id)
+    if key:
+        if not agent and not mutation and '/agents' in path:
+            if not any(grants.allowed(db,workspace_id,key,session.user_id,teamspace_id=i) for i in grants.accessible_spaces(db,workspace_id,session.user_id)):raise HTTPException(403,'Your role cannot view AI agents.')
+        else:grants.require(db,workspace_id,key,session.user_id,teamspace_id=space)
     return session, workspace, role, agent
 
 
@@ -40,7 +54,7 @@ def options(request: Request, db: Session = Depends(get_db)):
 def list_agents(workspace_id: uuid.UUID, request: Request, db: Session = Depends(get_db)):
     _, workspace, role, _ = access(request, db, workspace_id)
     agents = db.scalars(select(Agent).where(Agent.workspace_id == workspace_id).order_by(Agent.created_at, Agent.id)).all()
-    return {"agents": [service.agent_payload(agent) for agent in agents], "can_manage": service.can_manage(db, workspace_id, role),
+    return {"agents": [service.agent_payload(agent) for agent in agents if __import__("app.workspace_settings.permissions",fromlist=["allowed"]).allowed(db,workspace_id,"view_ai_agents",teamspace_id=agent.teamspace_id)], "can_manage": service.can_manage(db, workspace_id, role),
         "usage": {"count": len(agents), "agent_limit": None, "language_limit": workspace.language_limit, "plan_name": workspace.plan_name}}
 
 
@@ -159,6 +173,14 @@ def delete_agent(workspace_id: uuid.UUID, agent_id: uuid.UUID, body: AgentDelete
         action="deleted", summary="AI agent permanently deleted; conversation history retained.", revision=agent.revision))
     if db.scalar(select(AgentConversation.id).where(AgentConversation.agent_id==agent_id,AgentConversation.live_status.in_(["pending","active"]))):
         raise HTTPException(409,"Finish this agent’s pending and active live chats before deleting it.")
+    from app.models import AIInboundSession, AIOutgoingSession
+    conversations=db.scalars(select(AgentConversation).where(AgentConversation.agent_id==agent_id)).all()
+    for conversation in conversations:
+        outgoing=db.get(AIOutgoingSession,conversation.id)
+        forwarded_feedback=bool(outgoing and outgoing.last_result.get('result',{}).get('feedback'))
+        if not conversation.workflow_state.get('closed') or conversation.workflow_state.get('feedback_request') or forwarded_feedback:
+            if outgoing or db.scalar(select(AIInboundSession.id).where(AIInboundSession.conversation_id==conversation.id,AIInboundSession.expires_at>utcnow())):
+                raise HTTPException(409,'Finish this agent’s incoming and outgoing AI handoff conversations before deleting it.')
     db.delete(agent)
     db.commit()
 
@@ -243,9 +265,9 @@ def disconnect_agent(workspace_id: uuid.UUID, agent_id: uuid.UUID, connection_id
 @router.get("/workspaces/{workspace_id}/roles")
 def get_roles(workspace_id: uuid.UUID, request: Request, db: Session = Depends(get_db)):
     _, workspace, role, _ = access(request, db, workspace_id)
-    if role not in {"owner", "admin"}:
-        raise HTTPException(403, "Only workspace administrators can manage roles and permissions.")
-    return {"roles": [{"role": value, "manage_ai_agents": service.can_manage(db, workspace_id, value), "locked": value == "owner"} for value in ("owner", "admin", "member")],
+    from app.workspace_settings.permissions import require
+    require(db,workspace_id,"manage_workspace_roles")
+    return {"roles": [{"role": value, "manage_ai_agents": __import__("app.workspace_settings.permissions",fromlist=["legacy"]).legacy(db,workspace_id,value).__contains__("manage_ai_agents"), "locked": value == "owner"} for value in ("owner", "admin", "member")],
         "subscription": {"plan_name": workspace.plan_name, "agent_limit": None, "language_limit": workspace.language_limit}}
 
 
@@ -254,8 +276,8 @@ def save_roles(workspace_id: uuid.UUID, body: RoleSettings, request: Request, db
     session = current_session(request, db)
     require_csrf(request, session)
     workspace, role = service.workspace_for(db, workspace_id, session.user_id, lock=True)
-    if role not in {"owner", "admin"}:
-        raise HTTPException(403, "Only workspace administrators can manage roles and permissions.")
+    from app.workspace_settings.permissions import require
+    require(db,workspace_id,"manage_workspace_roles")
     for role_name, enabled in body.model_dump().items():
         permission = db.scalar(select(RolePermission).where(RolePermission.workspace_id == workspace_id, RolePermission.role == role_name))
         if not permission:
@@ -298,10 +320,11 @@ def tester_message(workspace_id: uuid.UUID, agent_id: uuid.UUID, body: TesterMes
         .order_by(AgentMessage.created_at.desc(), AgentMessage.id.desc()).limit(20)).all()
     history = [{"role": message.role, "content": message.content} for message in reversed(recent)]
     history.append({"role": "user", "content": body.content})
-    content = request.app.state.llm_tester.reply(agent, history)
+    from app.agent_knowledge.generation import reply as knowledge_reply
+    content,knowledge_meta=knowledge_reply(db,agent,request.app.state.llm_tester,history,None,request.app.state.agent_moderator)
     db.add(AgentMessage(conversation_id=conversation.id, role="user", content=body.content))
     db.flush()
-    reply = AgentMessage(conversation_id=conversation.id, role="assistant", content=content)
+    reply = AgentMessage(conversation_id=conversation.id, role="assistant", content=content,message_data=knowledge_meta)
     db.add(reply)
     db.commit()
     return {"conversation_id": str(conversation.id), "message": {"id": str(reply.id), "role": "assistant", "content": content, "created_at": reply.created_at.isoformat()}}

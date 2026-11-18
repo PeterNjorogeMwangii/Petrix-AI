@@ -19,7 +19,7 @@ def test_external_upgrade_preserves_prior_conversation_and_downgrades(database_e
             connection.execute(text("INSERT INTO agent_conversations (id,workspace_id,user_id,agent_name,workflow_state,custom_fields,created_at) VALUES (:id,:workspace,:user,'Old agent','{\"variables\":{\"ref\":\"OLD-1\"}}','{}',now())"),{'id':conversation,'workspace':workspace,'user':user});connection.commit()
             with connection.begin():command.upgrade(config,'head')
             with connection.begin():command.upgrade(config,'head')
-            assert connection.execute(text('SELECT version_num FROM alembic_version')).scalar()=='0012'
+            assert connection.execute(text('SELECT version_num FROM alembic_version')).scalar()=='0018'
             assert connection.execute(text('SELECT workflow_state,live_status FROM agent_conversations')).one()==({'variables':{'ref':'OLD-1'}},'none')
             assert connection.execute(text('SELECT count(*) FROM external_integrations')).scalar()==0
             connection.commit()

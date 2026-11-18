@@ -6,6 +6,8 @@ class HandoffWait:
     routing: dict
     eligible_ids: list
     assigned_id: object = None
+    priority: bool = False
+    priority_type: str = 'skip_queue'
 
 
 @dataclass(frozen=True)

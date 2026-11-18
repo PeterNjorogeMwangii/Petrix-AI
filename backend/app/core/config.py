@@ -15,6 +15,15 @@ class Settings(BaseSettings):
     api_base_url: str = "http://localhost:8000"
     magic_link_minutes: int = 15
     session_hours: int = 168
+    support_ai_base_url: str = ""
+    support_ai_api_key: SecretStr = SecretStr("")
+    support_ai_model: str = ""
+    support_worker_enabled: bool = True
+    support_worker_interval: int = 5
+    stripe_secret_key: SecretStr = SecretStr("")
+    stripe_webhook_secret: SecretStr = SecretStr("")
+    stripe_products_json: str = "{}"
+    usage_weights_json: str = "{}"
     smtp_host: str = "localhost"
     smtp_port: int = 1025
     smtp_username: str = ""
@@ -58,7 +67,48 @@ class Settings(BaseSettings):
     intent_llm_max_tokens: int = 2048
     llm_processing_max_tokens: int = 4096
     send_api_allowed_private_hosts: str = ""
+    knowledge_egress_ip: str = ""
+    knowledge_worker_enabled: bool = True
+    moderation_base_url: str = ""
+    moderation_api_key: SecretStr = SecretStr("")
+    moderation_model: str = ""
+    moderation_required: bool = False
+
     database_connections_encryption_key: SecretStr = SecretStr("")
+
+    @field_validator("support_ai_base_url", "moderation_base_url")
+    @classmethod
+    def support_url(cls,value):
+        if value:
+            parsed=urlsplit(value)
+            if parsed.scheme not in {'http','https'} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+                raise ValueError('Use a complete HTTP(S) AI API base URL without credentials, query or fragment.')
+        return value.rstrip('/')
+
+    @field_validator("support_worker_interval")
+    @classmethod
+    def worker_interval(cls,value):
+        if not 1<=value<=300:raise ValueError('Support worker interval must be 1–300 seconds.')
+        return value
+
+    @field_validator("stripe_products_json", "usage_weights_json")
+    @classmethod
+    def billing_json(cls,value,info):
+        import json, math
+        try:
+            data=json.loads(value)
+            if not isinstance(data,dict):raise ValueError()
+            if info.field_name=='usage_weights_json':
+                if any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or not 0<=v<=100000 for v in data.values()):raise ValueError()
+            else:
+                import re
+                for key,item in data.items():
+                    if not isinstance(item,dict) or not re.fullmatch(r'price_[a-zA-Z0-9_]+',item.get('price','')) or item.get('mode') not in {'payment','subscription'}:raise ValueError()
+                    if item['mode']=='payment' and (not isinstance(item.get('credits'),int) or item['credits']<=0):raise ValueError()
+                    if item.get('included') is not None and (not isinstance(item['included'],int) or item['included']<0):raise ValueError()
+                    if any(v is not None and (not isinstance(v,int) or v<1) for v in item.get('limits',{}).values()):raise ValueError()
+            return value
+        except (ValueError,TypeError,AttributeError):raise ValueError('Use a valid billing product or usage-weight JSON object.') from None
 
     @field_validator("database_connections_encryption_key")
     @classmethod
@@ -124,6 +174,11 @@ class Settings(BaseSettings):
                 raise ValueError("Use a complete language model base URL without credentials, query, or fragment.")
             if self.app_env == "production" and parsed.scheme != "https":
                 raise ValueError("Production language model connections require HTTPS.")
+        if self.app_env == 'production' and self.moderation_base_url and not self.moderation_base_url.startswith('https://'):
+            raise ValueError('Production moderation connections require HTTPS.')
+        if self.knowledge_egress_ip:
+            import ipaddress
+            ipaddress.ip_address(self.knowledge_egress_ip)
         if self.smtp_ssl and self.smtp_starttls:
             raise ValueError("Choose SMTP SSL or STARTTLS, not both.")
         if self.app_env == "production":

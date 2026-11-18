@@ -43,7 +43,9 @@ def resolve_addresses(host, port):
 
 
 class SendAPIClient:
-    def __init__(self, allowed_private_hosts=(), transport_factory=None, resolver=None, ssl_context=None):
+    def __init__(self, allowed_private_hosts=(), transport_factory=None, resolver=None, ssl_context=None, max_response_bytes=MAX_RESPONSE_BYTES, validate_response=True):
+        self.max_response_bytes=max_response_bytes
+        self.validate_response=validate_response
         self.allowed_private_hosts = {host.lower().rstrip(".") for host in allowed_private_hosts}
         self.transport_factory = transport_factory
         self.resolver = resolver or resolve_addresses
@@ -83,13 +85,13 @@ class SendAPIClient:
                     status = response.status_code
                     size, chunks = 0, []
                     length = response.headers.get("content-length")
-                    if length and int(length) > MAX_RESPONSE_BYTES:
+                    if length and int(length) > self.max_response_bytes:
                         raise ResponseLimit()
                     for chunk in response.iter_raw():
                         if time.monotonic() >= deadline:
                             return APIResult("timeout", status, error="timeout")
                         size += len(chunk)
-                        if size > MAX_RESPONSE_BYTES:
+                        if size > self.max_response_bytes:
                             raise ResponseLimit()
                         chunks.append(chunk)
                     if time.monotonic() >= deadline:
@@ -98,8 +100,8 @@ class SendAPIClient:
                     encoding = response.headers.get("content-encoding", "identity").lower().strip()
                     if encoding == "gzip":
                         decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
-                        raw = decoder.decompress(raw, MAX_RESPONSE_BYTES + 1)
-                        if len(raw) > MAX_RESPONSE_BYTES or decoder.unconsumed_tail:
+                        raw = decoder.decompress(raw, self.max_response_bytes + 1)
+                        if len(raw) > self.max_response_bytes or decoder.unconsumed_tail:
                             raise ResponseLimit()
                         if not decoder.eof or decoder.unused_data:
                             return APIResult("error", status, error="invalid_response")
@@ -119,7 +121,7 @@ class SendAPIClient:
                         value = httpx.Response(status, content=raw, headers={"content-type": response.headers.get("content-type", "text/plain")}).text
                     result = APIResult("success", status, value) if 200 <= status < 300 else APIResult("error", status, value, "http_error")
                     try:
-                        json_value(result.variable())
+                        if self.validate_response: json_value(result.variable())
                     except ScriptError:
                         raise ResponseLimit() from None
                     return result
