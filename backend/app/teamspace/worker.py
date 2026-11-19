@@ -34,6 +34,11 @@ def overdue(db,settings):
 
 def tick(factory,settings,ai,mailer):
  with factory() as db:
+  from app.inbox.knowledge import schedule
+  schedule(db)
+  from app.models import InboxAttachment
+  from sqlalchemy import delete
+  db.execute(delete(InboxAttachment).where(InboxAttachment.used.is_(False),InboxAttachment.created_at<utcnow()-timedelta(days=1)));db.commit()
   overdue(db,settings);ids=list(db.scalars(select(ChatAssignment.workspace_id)))
  for identifier in ids:
   with factory() as db:

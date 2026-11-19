@@ -82,5 +82,8 @@ def save_config(db,workspace_id,space_id,kind,body,settings):
   if data['user_id'] and not p.membership(db,workspace_id,uuid.UUID(data['user_id'])):raise HTTPException(422,'Choose a current workspace member.')
   teams={str(t) for t in db.scalars(select(SupportTeam.id).where(SupportTeam.workspace_id==workspace_id,SupportTeam.archived.is_(False)))}
   if not set(data['team_ids'])<=teams:raise HTTPException(422,'Choose current workspace teams.')
+ elif kind=='copilot':
+  models={v.strip() for v in settings.support_ai_models.split(',') if v.strip()}|{settings.support_ai_model}
+  if data['model'] and data['model'] not in models:raise HTTPException(422,'Select a model enabled on this server.')
  elif kind=='analytics':require_plan(db,workspace_id,settings,4)
  setattr(row,kind,data);row.revision+=1;db.commit();return row

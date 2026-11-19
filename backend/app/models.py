@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, JSON, LargeBinary, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Identity as SQLIdentity, Index, Integer, JSON, LargeBinary, String, Text, UniqueConstraint, Uuid, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from app.core.security import utcnow
@@ -129,6 +129,9 @@ class Agent(Base):
     languages: Mapped[list] = mapped_column(JSON, default=lambda: ["en"])
     default_language: Mapped[str] = mapped_column(String(16), default="en")
     voice_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    speech_to_text_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default='false')
+    speech_languages: Mapped[list] = mapped_column(JSON, default=list, server_default='[]')
+    include_audio_transcript: Mapped[bool] = mapped_column(Boolean, default=True, server_default='true')
     voice_name: Mapped[str] = mapped_column(String(100), default="")
     voice_speed: Mapped[float] = mapped_column(Float, default=1.0)
     revision: Mapped[int] = mapped_column(Integer, default=1)
@@ -285,6 +288,9 @@ class ChatAssignment(Base):
 
 
 class AgentConversation(Base):
+    message_sequence: Mapped[int] = mapped_column(BigInteger, server_default='0')
+    live_description: Mapped[str] = mapped_column(String(4000), default="", server_default="")
+    live_display_status: Mapped[str] = mapped_column(String(16), default="", server_default="")
     person_id: Mapped[Optional[uuid.UUID]]=mapped_column(ForeignKey('support_people.id',ondelete='SET NULL'),index=True)
     __tablename__ = "agent_conversations"
     live_status: Mapped[str] = mapped_column(String(16), default='none', server_default='none')
@@ -292,7 +298,8 @@ class AgentConversation(Base):
     live_context: Mapped[dict] = mapped_column(JSON, default=dict, server_default='{}')
     live_revision: Mapped[int] = mapped_column(Integer, default=1, server_default='1')
     live_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    __table_args__ = (CheckConstraint("live_status IN ('none','pending','active','closed') AND live_revision >= 1",name='ck_conversation_live_status'),
+    __table_args__ = (CheckConstraint('message_sequence >= 0', name='ck_conversation_message_sequence'),
+        CheckConstraint("live_status IN ('none','pending','active','closed') AND live_revision >= 1",name='ck_conversation_live_status'),
         Index('ix_conversation_live_queue','workspace_id','live_status','live_updated_at'))
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
@@ -307,6 +314,9 @@ class AgentConversation(Base):
 class AgentMessage(Base):
     author_id: Mapped[Optional[uuid.UUID]]=mapped_column(ForeignKey('users.id',ondelete='SET NULL'))
     __tablename__ = "agent_messages"
+    sequence: Mapped[int] = mapped_column(BigInteger, server_default='0')
+    __table_args__ = (CheckConstraint('sequence > 0', name='ck_agent_message_sequence'),
+        Index('ix_agent_message_sequence', 'conversation_id', 'sequence', unique=True))
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("agent_conversations.id", ondelete="CASCADE"), index=True)
     role: Mapped[str] = mapped_column(String(16))
@@ -548,6 +558,12 @@ class TicketCounter(Base):
 
 
 class SupportTicket(Base):
+    teamspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey('teamspaces.id',ondelete='RESTRICT'),index=True)
+    assigned_team_ids: Mapped[list] = mapped_column(JSON,default=list,server_default='[]')
+    sender_domain_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey('ticket_email_domains.id',ondelete='SET NULL'))
+    origin: Mapped[str] = mapped_column(String(12),default='workflow',server_default='workflow')
+    client_request_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid)
+    create_payload_hash: Mapped[str] = mapped_column(String(64),default='',server_default='')
     person_id: Mapped[Optional[uuid.UUID]]=mapped_column(ForeignKey('support_people.id',ondelete='SET NULL'),index=True)
     overdue_at: Mapped[Optional[datetime]]=mapped_column(DateTime(timezone=True))
     audience_team_ids: Mapped[list]=mapped_column(JSON,default=list,server_default='[]')
@@ -575,10 +591,13 @@ class SupportTicket(Base):
     revision: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    __table_args__ = (UniqueConstraint('workspace_id','number',name='uq_support_ticket_number'), UniqueConstraint('conversation_id','action_node_id','execution_id',name='uq_ticket_action_execution'), CheckConstraint("status IN ('open','in_progress','resolved','closed','overdue')",name='ck_support_ticket_status'), CheckConstraint("assignee_type IN ('none','user','team')",name='ck_support_ticket_assignee'), CheckConstraint('revision >= 1',name='ck_support_ticket_revision'))
+    __table_args__ = (UniqueConstraint('workspace_id','client_request_id',name='uq_ticket_manual_request'),UniqueConstraint('workspace_id','number',name='uq_support_ticket_number'), UniqueConstraint('conversation_id','action_node_id','execution_id',name='uq_ticket_action_execution'), CheckConstraint("status IN ('open','in_progress','resolved','closed','overdue')",name='ck_support_ticket_status'), CheckConstraint("assignee_type IN ('none','user','team')",name='ck_support_ticket_assignee'), CheckConstraint('revision >= 1',name='ck_support_ticket_revision'))
 
 
 class TicketNote(Base):
+    color: Mapped[str] = mapped_column(String(7),default='#fff0b3',server_default='#fff0b3')
+    revision: Mapped[int] = mapped_column(Integer,default=1,server_default='1')
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=utcnow,server_default=func.now())
     __tablename__ = 'ticket_notes'
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     ticket_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey('support_tickets.id', ondelete='CASCADE'), index=True)
@@ -591,6 +610,9 @@ class TicketNote(Base):
 
 
 class TicketEmail(Base):
+    cc_recipients: Mapped[list] = mapped_column(JSON,default=list,server_default='[]')
+    delivery_status: Mapped[str] = mapped_column(String(16),default='',server_default='')
+    delivery_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     __tablename__ = 'ticket_emails'
     kind: Mapped[str]=mapped_column(String(8),default='initial',server_default='initial')
     actor_id: Mapped[Optional[uuid.UUID]]=mapped_column(ForeignKey('users.id',ondelete='SET NULL'))
@@ -619,6 +641,8 @@ class TicketEmail(Base):
 
 class WorkspaceSettings(Base):
     __tablename__ = 'workspace_settings'
+    timezone: Mapped[str]=mapped_column(String(64),default='Africa/Nairobi',server_default='Africa/Nairobi')
+    analytics_started_at: Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow,server_default=func.now())
     workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('workspaces.id', ondelete='CASCADE'), primary_key=True)
     revision: Mapped[int] = mapped_column(Integer, default=1)
     ip_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -730,8 +754,10 @@ class TeamspaceOperations(Base):
 
 
 class SupportPerson(Base):
+    client_request_id: Mapped[Optional[uuid.UUID]]=mapped_column(Uuid)
+    create_payload_hash: Mapped[str]=mapped_column(String(64),default='',server_default='')
     __tablename__='support_people'
-    __table_args__=(UniqueConstraint('workspace_id','identity_key',name='uq_support_person_identity'),UniqueConstraint('workspace_id','external_id',name='uq_support_person_external_id'),)
+    __table_args__=(UniqueConstraint('workspace_id','client_request_id',name='uq_person_manual_request'),UniqueConstraint('workspace_id','identity_key',name='uq_support_person_identity'),UniqueConstraint('workspace_id','external_id',name='uq_support_person_external_id'),)
     id: Mapped[uuid.UUID]=mapped_column(Uuid,primary_key=True,default=uuid.uuid4)
     workspace_id: Mapped[uuid.UUID]=mapped_column(ForeignKey('workspaces.id',ondelete='CASCADE'),index=True)
     teamspace_id: Mapped[Optional[uuid.UUID]]=mapped_column(ForeignKey('teamspaces.id',ondelete='RESTRICT'))
@@ -821,6 +847,10 @@ class TagGroupMembership(Base):
 class CopilotKnowledge(Base):
     __tablename__='copilot_knowledge_sources'
     __table_args__=(UniqueConstraint('teamspace_id','name_key',name='uq_copilot_source_name'),)
+    status: Mapped[str]=mapped_column(String(12),default='success',server_default='success')
+    error: Mapped[str]=mapped_column(String(300),default='',server_default='')
+    options: Mapped[dict]=mapped_column(JSON,default=dict,server_default='{}')
+    next_refresh_at: Mapped[Optional[datetime]]=mapped_column(DateTime(timezone=True))
     id: Mapped[uuid.UUID]=mapped_column(Uuid,primary_key=True,default=uuid.uuid4)
     workspace_id: Mapped[uuid.UUID]=mapped_column(ForeignKey('workspaces.id',ondelete='CASCADE'),index=True)
     teamspace_id: Mapped[uuid.UUID]=mapped_column(ForeignKey('teamspaces.id',ondelete='CASCADE'),index=True)
@@ -904,3 +934,459 @@ class ConversationPersona(Base):
     alias_id: Mapped[Optional[uuid.UUID]]=mapped_column(ForeignKey('user_aliases.id',ondelete='SET NULL'))
     revision: Mapped[int]=mapped_column(Integer,default=1)
     __table_args__=(CheckConstraint("kind IN ('chats','tickets') AND revision>=1",name='ck_conversation_persona'),)
+
+
+class LivechatNote(Base):
+    __tablename__ = 'livechat_notes'
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('agent_conversations.id', ondelete='CASCADE'), index=True)
+    author_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey('users.id', ondelete='SET NULL'))
+    author_name: Mapped[str] = mapped_column(String(200))
+    content: Mapped[str] = mapped_column(String(4000))
+    color: Mapped[str] = mapped_column(String(7), default='#fff0b3')
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    __table_args__ = (CheckConstraint('revision >= 1', name='ck_livechat_note_revision'),)
+
+
+class TicketInboundEmail(Base):
+    __tablename__='ticket_inbound_emails'
+    id: Mapped[uuid.UUID] = mapped_column(Uuid,primary_key=True,default=uuid.uuid4)
+    ticket_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('support_tickets.id',ondelete='CASCADE'),index=True)
+    message_id: Mapped[str] = mapped_column(String(320))
+    sender: Mapped[str] = mapped_column(String(320))
+    recipient: Mapped[str] = mapped_column(String(320))
+    subject: Mapped[str] = mapped_column(String(250))
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=utcnow)
+
+
+class TicketMailEvent(Base):
+    __table_args__=(UniqueConstraint('workspace_id','message_key',name='uq_ticket_inbound_message'),)
+    message_key: Mapped[Optional[str]] = mapped_column(String(64))
+    __tablename__='ticket_mail_events'
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('workspaces.id',ondelete='CASCADE'),primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(200),primary_key=True)
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    ticket_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey('support_tickets.id',ondelete='SET NULL'))
+    email_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey('ticket_emails.id',ondelete='SET NULL'))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=utcnow)
+
+
+class PersonNote(Base):
+    __tablename__='person_notes'
+    id: Mapped[uuid.UUID]=mapped_column(Uuid,primary_key=True,default=uuid.uuid4)
+    person_id: Mapped[uuid.UUID]=mapped_column(ForeignKey('support_people.id',ondelete='CASCADE'),index=True)
+    author_id: Mapped[Optional[uuid.UUID]]=mapped_column(ForeignKey('users.id',ondelete='SET NULL'))
+    author_name: Mapped[str]=mapped_column(String(200))
+    content: Mapped[str]=mapped_column(Text)
+    color: Mapped[str]=mapped_column(String(7),default='#fff0b3')
+    revision: Mapped[int]=mapped_column(Integer,default=1)
+    created_at: Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow)
+    updated_at: Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow)
+    __table_args__=(CheckConstraint('revision >= 1',name='ck_person_note_revision'),)
+
+
+class InboxView(Base):
+    __tablename__='inbox_views'
+    __table_args__=(CheckConstraint("scope IN ('private','teamspace') AND revision>=1",name='ck_inbox_view'),)
+    id: Mapped[uuid.UUID]=mapped_column(Uuid,primary_key=True,default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID]=mapped_column(ForeignKey('workspaces.id',ondelete='CASCADE'),index=True)
+    teamspace_id: Mapped[uuid.UUID]=mapped_column(ForeignKey('teamspaces.id',ondelete='CASCADE'),index=True)
+    owner_id: Mapped[uuid.UUID]=mapped_column(ForeignKey('users.id',ondelete='CASCADE'))
+    scope: Mapped[str]=mapped_column(String(12),default='private')
+    name: Mapped[str]=mapped_column(String(100))
+    filters: Mapped[dict]=mapped_column(JSON,default=dict)
+    revision: Mapped[int]=mapped_column(Integer,default=1)
+    created_at: Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow)
+    updated_at: Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow)
+
+
+class InboxPreference(Base):
+    __tablename__='inbox_preferences'
+    workspace_id: Mapped[uuid.UUID]=mapped_column(ForeignKey('workspaces.id',ondelete='CASCADE'),primary_key=True)
+    user_id: Mapped[uuid.UUID]=mapped_column(ForeignKey('users.id',ondelete='CASCADE'),primary_key=True)
+    pinned: Mapped[list]=mapped_column(JSON,default=list)
+    sort: Mapped[str]=mapped_column(String(12),default='')
+    direction: Mapped[str]=mapped_column(String(4),default='desc')
+    revision: Mapped[int]=mapped_column(Integer,default=1)
+    __table_args__=(CheckConstraint("sort IN ('','created','latest','wait','handoff') AND direction IN ('asc','desc') AND revision>=1",name='ck_inbox_preference'),)
+
+
+class InboxAttachment(Base):
+    __tablename__='inbox_attachments'
+    id: Mapped[uuid.UUID]=mapped_column(Uuid,primary_key=True,default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID]=mapped_column(ForeignKey('workspaces.id',ondelete='CASCADE'),index=True)
+    kind: Mapped[str]=mapped_column(String(8))
+    record_id: Mapped[uuid.UUID]=mapped_column(Uuid,index=True)
+    actor_id: Mapped[Optional[uuid.UUID]]=mapped_column(ForeignKey('users.id',ondelete='SET NULL'))
+    file_name: Mapped[str]=mapped_column(String(255))
+    content_type: Mapped[str]=mapped_column(String(120))
+    size_bytes: Mapped[int]=mapped_column(Integer)
+    data: Mapped[bytes]=mapped_column(LargeBinary)
+    used: Mapped[bool]=mapped_column(Boolean,default=False)
+    private: Mapped[bool]=mapped_column(Boolean,default=False)
+    created_at: Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow)
+    __table_args__=(CheckConstraint("kind IN ('chats','tickets') AND size_bytes>0 AND size_bytes<=10485760",name='ck_inbox_attachment'),)
+
+
+class AnalyticsActivity(Base):
+    __tablename__='analytics_activity'
+    id: Mapped[uuid.UUID]=mapped_column(Uuid,primary_key=True,default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID]=mapped_column(ForeignKey('workspaces.id',ondelete='CASCADE'),index=True)
+    user_id: Mapped[uuid.UUID]=mapped_column(ForeignKey('users.id',ondelete='CASCADE'),index=True)
+    session_id: Mapped[uuid.UUID]=mapped_column(ForeignKey('auth_sessions.id',ondelete='CASCADE'))
+    state: Mapped[str]=mapped_column(String(12))
+    capacity: Mapped[int]=mapped_column(Integer,default=0)
+    capacities: Mapped[dict]=mapped_column(JSON,default=dict,server_default='{}')
+    started_at: Mapped[datetime]=mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[Optional[datetime]]=mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime]=mapped_column(DateTime(timezone=True))
+    lease_until: Mapped[datetime]=mapped_column(DateTime(timezone=True))
+    __table_args__=(CheckConstraint("state IN ('online','away','offline') AND capacity>=0 AND lease_until>=started_at",name='ck_analytics_activity'),Index('ix_analytics_activity_window','workspace_id','started_at','lease_until'),Index('ix_analytics_activity_session','workspace_id','session_id','ended_at','started_at'))
+
+
+class AnalyticsRecordEvent(Base):
+    __tablename__='analytics_record_events'
+    id: Mapped[uuid.UUID]=mapped_column(Uuid,primary_key=True,default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID]=mapped_column(ForeignKey('workspaces.id',ondelete='CASCADE'),index=True)
+    conversation_id: Mapped[Optional[uuid.UUID]]=mapped_column(ForeignKey('agent_conversations.id',ondelete='CASCADE'),index=True)
+    ticket_id: Mapped[Optional[uuid.UUID]]=mapped_column(ForeignKey('support_tickets.id',ondelete='CASCADE'),index=True)
+    event: Mapped[str]=mapped_column(String(16))
+    assigned_user_id: Mapped[Optional[uuid.UUID]]=mapped_column(ForeignKey('users.id',ondelete='SET NULL'))
+    team_ids: Mapped[list]=mapped_column(JSON,default=list)
+    status: Mapped[str]=mapped_column(String(16))
+    detail: Mapped[dict]=mapped_column(JSON,default=dict)
+    created_at: Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow,index=True)
+    __table_args__=(CheckConstraint("event IN ('assignment','status','feedback') AND ((conversation_id IS NOT NULL AND ticket_id IS NULL) OR (ticket_id IS NOT NULL AND conversation_id IS NULL))",name='ck_analytics_record_event'),)
+
+
+class PerceptionSettings(Base):
+    __tablename__ = 'perception_settings'
+    teamspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('teamspaces.id',ondelete='CASCADE'),primary_key=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('workspaces.id',ondelete='CASCADE'),index=True)
+    revision: Mapped[int] = mapped_column(Integer,default=1)
+    use_custom: Mapped[bool] = mapped_column(Boolean,default=True)
+    use_teams: Mapped[bool] = mapped_column(Boolean,default=False)
+    translate: Mapped[bool] = mapped_column(Boolean,default=False)
+    target_language: Mapped[str] = mapped_column(String(12),default='en')
+    excluded_languages: Mapped[list] = mapped_column(JSON,default=list)
+    __table_args__ = (CheckConstraint('revision>=1',name='ck_perception_settings_revision'),)
+
+
+class PerceptionKeyword(Base):
+    __tablename__ = 'perception_keywords'
+    id: Mapped[uuid.UUID] = mapped_column(Uuid,primary_key=True,default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('workspaces.id',ondelete='CASCADE'),index=True)
+    teamspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('teamspaces.id',ondelete='CASCADE'),index=True)
+    team_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey('support_teams.id',ondelete='CASCADE'))
+    kind: Mapped[str] = mapped_column(String(12),default='custom')
+    name: Mapped[str] = mapped_column(String(200))
+    name_key: Mapped[str] = mapped_column(String(200))
+    variations: Mapped[list] = mapped_column(JSON,default=list)
+    tag_ids: Mapped[list] = mapped_column(JSON,default=list)
+    enabled: Mapped[bool] = mapped_column(Boolean,default=True)
+    revision: Mapped[int] = mapped_column(Integer,default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=utcnow)
+    __table_args__ = (UniqueConstraint('teamspace_id','kind','name_key',name='uq_perception_keyword_name'),UniqueConstraint('teamspace_id','team_id',name='uq_perception_team_keyword'),CheckConstraint("revision>=1 AND ((kind='custom' AND team_id IS NULL) OR (kind='team' AND team_id IS NOT NULL))",name='ck_perception_keyword_kind'))
+
+
+class PerceptionSource(Base):
+    __tablename__ = 'perception_sources'
+    id: Mapped[uuid.UUID] = mapped_column(Uuid,primary_key=True,default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('workspaces.id',ondelete='CASCADE'),index=True)
+    teamspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('teamspaces.id',ondelete='CASCADE'),index=True)
+    platform: Mapped[str] = mapped_column(String(16))
+    method: Mapped[str] = mapped_column(String(12))
+    name: Mapped[str] = mapped_column(String(200))
+    name_key: Mapped[str] = mapped_column(String(200))
+    url: Mapped[str] = mapped_column(String(2048),default='')
+    timezone: Mapped[str] = mapped_column(String(64),default='Africa/Nairobi')
+    recurring: Mapped[bool] = mapped_column(Boolean,default=False)
+    interval_unit: Mapped[str] = mapped_column(String(12),default='hours')
+    interval_value: Mapped[int] = mapped_column(Integer,default=24)
+    next_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    revision: Mapped[int] = mapped_column(Integer,default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=utcnow)
+    __table_args__ = (UniqueConstraint('teamspace_id','platform','name_key',name='uq_perception_source_name'),CheckConstraint("platform IN ('facebook','x') AND method IN ('page','keyword') AND revision>=1",name='ck_perception_source_kind'),CheckConstraint("(interval_unit='days' AND interval_value BETWEEN 1 AND 30) OR (interval_unit='hours' AND interval_value BETWEEN 1 AND 720) OR (interval_unit='minutes' AND interval_value BETWEEN 10 AND 720)",name='ck_perception_source_interval'))
+
+
+class PerceptionSourceKeyword(Base):
+    __tablename__ = 'perception_source_keywords'
+    source_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('perception_sources.id',ondelete='CASCADE'),primary_key=True)
+    keyword_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('perception_keywords.id',ondelete='CASCADE'),primary_key=True)
+    teamspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('teamspaces.id',ondelete='CASCADE'))
+    platform: Mapped[str] = mapped_column(String(16))
+    __table_args__ = (UniqueConstraint('teamspace_id','platform','keyword_id',name='uq_perception_keyword_platform'),)
+
+
+class PerceptionRun(Base):
+    __tablename__ = 'perception_runs'
+    id: Mapped[uuid.UUID] = mapped_column(Uuid,primary_key=True,default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('workspaces.id',ondelete='CASCADE'),index=True)
+    source_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('perception_sources.id',ondelete='CASCADE'),index=True)
+    actor_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey('users.id',ondelete='SET NULL'))
+    actor_name: Mapped[str] = mapped_column(String(320),default='Petrix AI')
+    trigger: Mapped[str] = mapped_column(String(16))
+    event: Mapped[str] = mapped_column(String(64),default='scrape')
+    status: Mapped[str] = mapped_column(String(16),default='scheduled')
+    range_start: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    range_end: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=utcnow,index=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    lease_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    worker_token: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid)
+    attempts: Mapped[int] = mapped_column(Integer,default=0)
+    error: Mapped[str] = mapped_column(String(1000),default='')
+    detail: Mapped[dict] = mapped_column(JSON,default=dict)
+    __table_args__ = (CheckConstraint("status IN ('scheduled','in_progress','success','failed','cancelled') AND trigger IN ('manual','historical','recurring','event') AND attempts>=0",name='ck_perception_run'),Index('ix_perception_run_claim','status','scheduled_at'))
+
+
+class PerceptionEntry(Base):
+    __tablename__ = 'perception_entries'
+    id: Mapped[uuid.UUID] = mapped_column(Uuid,primary_key=True,default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('workspaces.id',ondelete='CASCADE'),index=True)
+    teamspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('teamspaces.id',ondelete='CASCADE'),index=True)
+    platform: Mapped[str] = mapped_column(String(16))
+    external_key: Mapped[str] = mapped_column(String(64))
+    content: Mapped[str] = mapped_column(Text)
+    url: Mapped[str] = mapped_column(String(2048),default='')
+    kind: Mapped[str] = mapped_column(String(12),default='post')
+    posted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),index=True)
+    scraped_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=utcnow)
+    sources: Mapped[dict] = mapped_column(JSON,default=dict)
+    keywords: Mapped[dict] = mapped_column(JSON,default=dict)
+    tag_ids: Mapped[list] = mapped_column(JSON,default=list)
+    categories: Mapped[list] = mapped_column(JSON,default=list)
+    sentiment: Mapped[str] = mapped_column(String(12),default='unknown')
+    language: Mapped[str] = mapped_column(String(12),default='')
+    translation: Mapped[str] = mapped_column(Text,default='')
+    processing: Mapped[str] = mapped_column(String(16),default='pending',index=True)
+    processing_config: Mapped[dict] = mapped_column(JSON,default=dict)
+    processing_error: Mapped[str] = mapped_column(String(500),default='')
+    processing_token: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid)
+    processing_lease: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (UniqueConstraint('teamspace_id','platform','external_key',name='uq_perception_entry_external'),CheckConstraint("sentiment IN ('positive','negative','neutral','mixed','unknown') AND processing IN ('pending','in_progress','completed','failed','skipped')",name='ck_perception_entry_processing'),Index('ix_perception_entry_window','teamspace_id','posted_at'))
+
+
+class AdvisorConversation(Base):
+    __tablename__ = 'advisor_conversations'
+    id: Mapped[uuid.UUID] = mapped_column(Uuid,primary_key=True,default=uuid.uuid4)
+    client_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('workspaces.id',ondelete='CASCADE'),index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('users.id',ondelete='CASCADE'),index=True)
+    teamspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('teamspaces.id',ondelete='CASCADE'),index=True)
+    title: Mapped[str] = mapped_column(String(160),default='New chat')
+    revision: Mapped[int] = mapped_column(Integer,default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=utcnow,index=True)
+    __table_args__ = (UniqueConstraint('workspace_id','user_id','client_id',name='uq_advisor_conversation_client'),CheckConstraint('revision>=1',name='ck_advisor_conversation_revision'),Index('ix_advisor_history','workspace_id','user_id','updated_at'))
+
+
+class AdvisorMessage(Base):
+    __tablename__ = 'advisor_messages'
+    id: Mapped[uuid.UUID] = mapped_column(Uuid,primary_key=True,default=uuid.uuid4)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('advisor_conversations.id',ondelete='CASCADE'),index=True)
+    client_request_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    role: Mapped[str] = mapped_column(String(12))
+    content: Mapped[str] = mapped_column(Text,default='')
+    payload_hash: Mapped[str] = mapped_column(String(64),default='')
+    status: Mapped[str] = mapped_column(String(16),default='completed',index=True)
+    mode: Mapped[str] = mapped_column(String(24),default='')
+    sources: Mapped[list] = mapped_column(JSON,default=list)
+    navigation: Mapped[list] = mapped_column(JSON,default=list)
+    notice: Mapped[str] = mapped_column(String(1000),default='')
+    attempts: Mapped[int] = mapped_column(Integer,default=0)
+    worker_token: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid)
+    lease_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=utcnow,index=True)
+    __table_args__ = (UniqueConstraint('conversation_id','client_request_id','role',name='uq_advisor_message_request'),CheckConstraint("role IN ('user','assistant') AND status IN ('pending','running','completed','failed') AND attempts>=0",name='ck_advisor_message'),Index('ix_advisor_messages_order','conversation_id','created_at','id'))
+
+
+class AdvisorAttachment(Base):
+    __tablename__ = 'advisor_attachments'
+    id: Mapped[uuid.UUID] = mapped_column(Uuid,primary_key=True,default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('workspaces.id',ondelete='CASCADE'),index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('users.id',ondelete='CASCADE'),index=True)
+    message_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey('advisor_messages.id',ondelete='CASCADE'),index=True)
+    filename: Mapped[str] = mapped_column(String(200))
+    mime_type: Mapped[str] = mapped_column(String(100))
+    size: Mapped[int] = mapped_column(Integer)
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    preview: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
+    extracted_text: Mapped[str] = mapped_column(Text,default='')
+    note: Mapped[str] = mapped_column(String(500),default='')
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=utcnow,index=True)
+    __table_args__ = (CheckConstraint('size>0 AND size<=10485760',name='ck_advisor_attachment_size'),)
+
+
+class WebchatChannel(Base):
+    __tablename__='webchat_channels'
+    __table_args__=(UniqueConstraint('agent_id','client_id',name='uq_webchat_channel_client'),CheckConstraint('revision>=1',name='ck_webchat_channel_revision'))
+    id:Mapped[uuid.UUID]=mapped_column(Uuid,primary_key=True,default=uuid.uuid4)
+    client_id:Mapped[uuid.UUID]=mapped_column(Uuid)
+    agent_id:Mapped[uuid.UUID]=mapped_column(ForeignKey('ai_agents.id',ondelete='CASCADE'),index=True)
+    workspace_id:Mapped[uuid.UUID]=mapped_column(ForeignKey('workspaces.id',ondelete='CASCADE'),index=True)
+    actor_id:Mapped[uuid.UUID]=mapped_column(ForeignKey('users.id',ondelete='CASCADE'))
+    name:Mapped[str]=mapped_column(String(100))
+    enabled:Mapped[bool]=mapped_column(Boolean,default=False)
+    config:Mapped[dict]=mapped_column(JSON,default=dict)
+    runtime:Mapped[dict]=mapped_column(JSON,default=dict)
+    revision:Mapped[int]=mapped_column(Integer,default=1)
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow)
+    updated_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow)
+
+
+class WebchatAsset(Base):
+    __tablename__='webchat_assets'
+    id:Mapped[uuid.UUID]=mapped_column(Uuid,primary_key=True,default=uuid.uuid4)
+    agent_id:Mapped[uuid.UUID]=mapped_column(ForeignKey('ai_agents.id',ondelete='CASCADE'),index=True)
+    data:Mapped[bytes]=mapped_column(LargeBinary)
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow)
+
+
+class WebchatPreview(Base):
+    __tablename__='webchat_previews'
+    token_hash:Mapped[str]=mapped_column(String(64),primary_key=True)
+    channel_id:Mapped[uuid.UUID]=mapped_column(ForeignKey('webchat_channels.id',ondelete='CASCADE'),index=True)
+    config:Mapped[dict]=mapped_column(JSON)
+    runtime:Mapped[dict]=mapped_column(JSON)
+    expires_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),index=True)
+
+
+class WebchatSession(Base):
+    __tablename__='webchat_sessions'
+    id:Mapped[uuid.UUID]=mapped_column(Uuid,primary_key=True,default=uuid.uuid4)
+    channel_id:Mapped[uuid.UUID]=mapped_column(ForeignKey('webchat_channels.id',ondelete='CASCADE'),index=True)
+    token_hash:Mapped[str]=mapped_column(String(64),unique=True)
+    preview_hash:Mapped[str]=mapped_column(String(64),default='')
+    host_origin:Mapped[str]=mapped_column(String(300))
+    person_id:Mapped[Optional[uuid.UUID]]=mapped_column(ForeignKey('support_people.id',ondelete='SET NULL'))
+    expires_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),index=True)
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow)
+
+
+class WebchatConversation(Base):
+    __tablename__='webchat_conversations'
+    conversation_id:Mapped[uuid.UUID]=mapped_column(ForeignKey('agent_conversations.id',ondelete='CASCADE'),primary_key=True)
+    session_id:Mapped[uuid.UUID]=mapped_column(ForeignKey('webchat_sessions.id',ondelete='CASCADE'),index=True)
+    runtime:Mapped[dict]=mapped_column(JSON)
+    started:Mapped[bool]=mapped_column(Boolean,default=False)
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow)
+
+
+class WebchatRequest(Base):
+    __tablename__='webchat_requests'
+    __table_args__=(CheckConstraint("status IN ('running','completed','failed')",name='ck_webchat_request_status'),)
+    session_id:Mapped[uuid.UUID]=mapped_column(ForeignKey('webchat_sessions.id',ondelete='CASCADE'),primary_key=True)
+    request_id:Mapped[uuid.UUID]=mapped_column(Uuid,primary_key=True)
+    digest:Mapped[str]=mapped_column(String(64))
+    conversation_id:Mapped[Optional[uuid.UUID]]=mapped_column(ForeignKey('agent_conversations.id',ondelete='CASCADE'))
+    status:Mapped[str]=mapped_column(String(16),default='running')
+    error:Mapped[str]=mapped_column(String(300),default='')
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow)
+
+
+class WhatsAppChannel(Base):
+    __tablename__ = 'whatsapp_channels'
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    client_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('workspaces.id', ondelete='CASCADE'), index=True)
+    agent_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('ai_agents.id', ondelete='CASCADE'), index=True)
+    actor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'))
+    name: Mapped[str] = mapped_column(String(100))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    runtime: Mapped[dict] = mapped_column(JSON, default=dict)
+    app_id: Mapped[str] = mapped_column(String(32), default='', index=True)
+    phone_number_id: Mapped[Optional[str]] = mapped_column(String(32), unique=True)
+    credentials: Mapped[str] = mapped_column(Text, default='')
+    setup_secret: Mapped[str] = mapped_column(Text)
+    verify_token_hash: Mapped[str] = mapped_column(String(64))
+    connection_revision: Mapped[int] = mapped_column(Integer, default=1)
+    verified_revision: Mapped[Optional[int]] = mapped_column(Integer)
+    verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    webhook_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    display_phone: Mapped[str] = mapped_column(String(60), default='')
+    verified_name: Mapped[str] = mapped_column(String(200), default='')
+    last_error: Mapped[str] = mapped_column(String(300), default='')
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    __table_args__ = (UniqueConstraint('agent_id','client_id',name='uq_whatsapp_channel_client'),
+        CheckConstraint('revision >= 1 AND connection_revision >= 1',name='ck_whatsapp_channel_revision'))
+
+
+class WhatsAppContact(Base):
+    __tablename__ = 'whatsapp_contacts'
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    channel_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('whatsapp_channels.id',ondelete='CASCADE'), index=True)
+    phone_number_id: Mapped[str] = mapped_column(String(32))
+    identity_key: Mapped[str] = mapped_column(String(160))
+    wa_id: Mapped[str] = mapped_column(String(30),default='')
+    bsuid: Mapped[str] = mapped_column(String(160),default='')
+    person_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey('support_people.id',ondelete='SET NULL'))
+    current_conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey('agent_conversations.id',ondelete='SET NULL'))
+    last_customer_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=utcnow)
+    __table_args__ = (UniqueConstraint('channel_id','phone_number_id','identity_key',name='uq_whatsapp_contact_identity'),)
+
+
+class WhatsAppConversation(Base):
+    __tablename__ = 'whatsapp_conversations'
+    conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('agent_conversations.id',ondelete='CASCADE'),primary_key=True)
+    channel_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey('whatsapp_channels.id',ondelete='SET NULL'),index=True)
+    contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey('whatsapp_contacts.id',ondelete='SET NULL'),index=True)
+    phone_number_id: Mapped[str] = mapped_column(String(32))
+    runtime: Mapped[dict] = mapped_column(JSON,default=dict)
+    started: Mapped[bool] = mapped_column(Boolean,default=False)
+    queued_sequence: Mapped[int] = mapped_column(BigInteger,default=0)
+    feedback_state: Mapped[dict] = mapped_column(JSON,default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=utcnow)
+
+
+class WhatsAppInbound(Base):
+    __tablename__ = 'whatsapp_inbound'
+    id: Mapped[uuid.UUID] = mapped_column(Uuid,primary_key=True,default=uuid.uuid4)
+    position: Mapped[int] = mapped_column(BigInteger,SQLIdentity(),unique=True)
+    channel_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('whatsapp_channels.id',ondelete='CASCADE'),index=True)
+    contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey('whatsapp_contacts.id',ondelete='SET NULL'),index=True)
+    conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey('agent_conversations.id',ondelete='SET NULL'))
+    event_key: Mapped[str] = mapped_column(String(64))
+    provider_id: Mapped[str] = mapped_column(String(512))
+    kind: Mapped[str] = mapped_column(String(16))
+    payload: Mapped[dict] = mapped_column(JSON,default=dict)
+    connection_revision: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16),default='pending')
+    lease_token: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid)
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str] = mapped_column(String(300),default='')
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=utcnow)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (UniqueConstraint('channel_id','event_key',name='uq_whatsapp_inbound_event'),
+        CheckConstraint("status IN ('pending','running','completed','failed','uncertain','dismissed','ignored')",name='ck_whatsapp_inbound_status'))
+
+
+class WhatsAppOutbox(Base):
+    __tablename__ = 'whatsapp_outbox'
+    id: Mapped[uuid.UUID] = mapped_column(Uuid,primary_key=True,default=uuid.uuid4)
+    channel_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('whatsapp_channels.id',ondelete='CASCADE'),index=True)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('agent_conversations.id',ondelete='CASCADE'),index=True)
+    message_id: Mapped[uuid.UUID] = mapped_column(ForeignKey('agent_messages.id',ondelete='CASCADE'),index=True)
+    message_sequence: Mapped[int] = mapped_column(BigInteger)
+    part: Mapped[int] = mapped_column(Integer)
+    payload: Mapped[dict] = mapped_column(JSON,default=dict)
+    buttons: Mapped[dict] = mapped_column(JSON,default=dict)
+    connection_revision: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16),default='queued')
+    provider_id: Mapped[Optional[str]] = mapped_column(String(512),unique=True)
+    lease_token: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid)
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str] = mapped_column(String(300),default='')
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),default=utcnow)
+    __table_args__ = (UniqueConstraint('message_id','part',name='uq_whatsapp_delivery_part'),
+        CheckConstraint("status IN ('queued','sending','sent','delivered','read','failed','uncertain','blocked','cancelled')",name='ck_whatsapp_outbox_status'))

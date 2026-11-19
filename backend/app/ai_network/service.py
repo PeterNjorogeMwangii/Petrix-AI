@@ -106,7 +106,7 @@ class TransferPlan:
             try:authenticate_agent(self.db,row.target_id,decrypt(row.secret_ciphertext,self.settings))
             except HTTPException:raise ScriptError('The receiving agent credentials changed or incoming handoffs were disabled. Verify the connection again.') from None
         variables=privacy.context(context.variables)
-        recent=self.db.scalars(select(AgentMessage).where(AgentMessage.conversation_id==self.conversation.id).order_by(AgentMessage.created_at.desc(),AgentMessage.id.desc()).limit(40)).all()
+        recent=self.db.scalars(select(AgentMessage).where(AgentMessage.conversation_id==self.conversation.id).order_by(AgentMessage.sequence.desc()).limit(40)).all()
         history=[];size=0
         for message in recent:
             value=privacy.text(message.content)

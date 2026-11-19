@@ -2,6 +2,7 @@ from pathlib import Path
 import uuid
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import text
 
 
@@ -19,7 +20,7 @@ def test_ticket_upgrade_and_downgrade_preserve_previous_ai_handoff(database_engi
             connection.execute(text("INSERT INTO ai_outgoing_sessions (conversation_id,transfer_id,target_id,target_name,domain,status,token_ciphertext,start_payload,pending,last_result,error,updated_at) VALUES (:id,:transfer,:target,'Receiving agent','https://receiver.example','starting','','{}','{}','{}','',now())"),{'id':conversation,'transfer':uuid.uuid4(),'target':uuid.uuid4()});connection.commit()
             with connection.begin():command.upgrade(config,'head')
             with connection.begin():command.upgrade(config,'head')
-            assert connection.execute(text('SELECT version_num FROM alembic_version')).scalar()=='0018'
+            assert connection.execute(text('SELECT version_num FROM alembic_version')).scalar()==ScriptDirectory.from_config(config).get_current_head()
             assert connection.execute(text('SELECT status FROM ai_outgoing_sessions')).scalar()=='starting'
             assert connection.execute(text('SELECT workflow_state FROM agent_conversations')).scalar()=={'variables':{'ref':'KEEP'}}
             for table in ['ticket_tag_groups','ticket_tags','ticket_email_domains','ticket_email_templates','ticket_counters','support_tickets','ticket_notes','ticket_emails']:

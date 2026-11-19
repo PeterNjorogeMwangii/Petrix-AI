@@ -51,7 +51,7 @@ class AutoFillService:
         if {str(item.id) for item in definitions}!=set(field_ids):return FillResult(error='fields_unavailable')
         revisions={str(item.id):item.revision for item in definitions}
         recent=self.db.scalars(select(AgentMessage).where(AgentMessage.conversation_id==self.conversation_id)
-            .order_by(AgentMessage.created_at.desc(),AgentMessage.id.desc()).limit(20)).all()
+            .order_by(AgentMessage.sequence.desc()).limit(20)).all()
         history=[{'role':item.role,'content':item.content[:2000]} for item in reversed(recent)]
         current=context.event.get('content') or ''
         if current and (not history or history[-1]!={'role':'user','content':current}):history.append({'role':'user','content':current})

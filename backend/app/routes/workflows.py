@@ -105,6 +105,8 @@ def store_input(db, conversation, body, files, source_request_id=None):
         db.add(AgentMessage(conversation_id=conversation.id, role="user",
             content="Uploaded: " + ", ".join(file["name"] for file in files) if files else "Attachment test: " + body.attachment.name,
             message_data={**provenance, "event": body.event, "attachment": body.attachment.model_dump(), "attachments": files}))
+    # Persist input before any generated output, including a same-clock-tick reply.
+    db.flush()
 
 
 def store_output(db, conversation, output):
@@ -118,12 +120,14 @@ def store_output(db, conversation, output):
     return messages
 
 
-def process_event(workspace_id, agent_id, body, request, db, upload_payloads=None, inbox_actor=None, inbox_revision=None, network_actor=None):
-    result=_process_event(workspace_id,agent_id,body,request,db,upload_payloads,inbox_actor,inbox_revision,network_actor)
+def process_event(workspace_id, agent_id, body, request, db, upload_payloads=None, inbox_actor=None, inbox_revision=None, network_actor=None, webchat_actor=None, whatsapp_actor=None):
+    result=_process_event(workspace_id,agent_id,body,request,db,upload_payloads,inbox_actor,inbox_revision,network_actor,webchat_actor,whatsapp_actor)
     from app.workspace_settings.usage import record_actions
     from app.models import AgentConversation
     metered_conversation=db.get(AgentConversation,uuid.UUID(result['conversation_id']))
     record_actions(db,workspace_id,agent_id,metered_conversation.user_id,result,body.client_event_id or (network_actor.request_id if network_actor else None))
+    from app.livechats.service import track_language
+    track_language(db,metered_conversation)
     if result.get('last_ticket'):
         from app.tickets.notifications import dispatch
         dispatch(db,request.app.state.ticket_mailer,conversation_id=uuid.UUID(result['conversation_id']))
@@ -132,11 +136,31 @@ def process_event(workspace_id, agent_id, body, request, db, upload_payloads=Non
     if inbox_actor:
         from app.teamspace.assignment import drain
         drain(db,workspace_id)
+    from app.whatsapp.delivery import enqueue
+    enqueue(db,metered_conversation,request.app.state.settings)
     return result
 
 
-def _process_event(workspace_id, agent_id, body, request, db, upload_payloads=None, inbox_actor=None, inbox_revision=None, network_actor=None):
-    if network_actor is not None:
+def _process_event(workspace_id, agent_id, body, request, db, upload_payloads=None, inbox_actor=None, inbox_revision=None, network_actor=None, webchat_actor=None, whatsapp_actor=None):
+    published_document=None
+    if whatsapp_actor is not None:
+        from app.webchat.service import runtime_objects
+        from app.whatsapp.service import inactive_reason
+        from app.models import WhatsAppConversation,WhatsAppContact,WhatsAppChannel
+        link=db.get(WhatsAppConversation,whatsapp_actor.conversation_id)
+        contact=db.get(WhatsAppContact,whatsapp_actor.contact_id)
+        channel=db.get(WhatsAppChannel,whatsapp_actor.channel_id)
+        if not link or not contact or not channel or link.channel_id!=channel.id or link.contact_id!=contact.id or contact.channel_id!=channel.id or channel.workspace_id!=workspace_id or channel.agent_id!=agent_id or channel.actor_id!=whatsapp_actor.user_id or inactive_reason(db,channel):raise HTTPException(403,'WhatsApp scope mismatch or channel unavailable.')
+        session=whatsapp_actor;agent,published_document=runtime_objects(link.runtime)
+    elif webchat_actor is not None:
+        from app.webchat.service import runtime_objects
+        from app.models import WebchatConversation,WebchatSession,WebchatChannel
+        link=db.get(WebchatConversation,webchat_actor.conversation_id)
+        visitor=db.get(WebchatSession,webchat_actor.session_id)
+        channel=db.get(WebchatChannel,visitor.channel_id) if visitor else None
+        if not link or not visitor or link.session_id!=visitor.id or not channel or channel.agent_id!=agent_id or channel.workspace_id!=workspace_id or webchat_actor.user_id!=channel.actor_id:raise HTTPException(403,'Webchat scope mismatch.')
+        session=webchat_actor;agent,published_document=runtime_objects(link.runtime)
+    elif network_actor is not None:
         if network_actor.agent_id!=agent_id or body.conversation_id not in {None,network_actor.conversation_id}:
             raise HTTPException(403,'Network session scope mismatch.')
         session=network_actor
@@ -149,8 +173,14 @@ def _process_event(workspace_id, agent_id, body, request, db, upload_payloads=No
         session=inbox_actor;require_csrf(request,session)
         agent_service.workspace_for(db,workspace_id,session.user_id)
         agent=agent_service.agent_for(db,workspace_id,agent_id)
+    if not published_document and body.conversation_id:
+        from app.models import WebchatConversation,WhatsAppConversation
+        public_link=db.get(WebchatConversation,body.conversation_id) or db.get(WhatsAppConversation,body.conversation_id)
+        if public_link:
+            from app.webchat.service import runtime_objects
+            agent,published_document=runtime_objects(public_link.runtime)
     now = utcnow()
-    key = token_hash("workflow-tester:{}:{}".format(session.user_id, int(now.timestamp()) // 60))
+    key = token_hash("workflow-tester:{}:{}".format(whatsapp_actor.contact_id if whatsapp_actor else webchat_actor.session_id if webchat_actor else session.user_id, int(now.timestamp()) // 60))
     statement = insert(RateLimit).values(key=key, count=1, expires_at=now + timedelta(minutes=2))
     count = db.execute(statement.on_conflict_do_update(index_elements=[RateLimit.key], set_={"count": RateLimit.count + 1}).returning(RateLimit.count)).scalar_one()
     db.commit()
@@ -158,9 +188,9 @@ def _process_event(workspace_id, agent_id, body, request, db, upload_payloads=No
         raise HTTPException(429, "Too many tester events. Wait a minute and try again.")
     if body.language and body.language not in agent.languages and not body.conversation_id and not network_actor:
         raise HTTPException(422, "Choose a language configured for this agent.")
-    document = service.get_document(db, agent_id)
+    document = published_document or service.get_document(db, agent_id)
     recovered_ticket_start=False
-    selected_conversation=network_actor.conversation_id if network_actor else body.conversation_id
+    selected_conversation=whatsapp_actor.conversation_id if whatsapp_actor else webchat_actor.conversation_id if webchat_actor else network_actor.conversation_id if network_actor else body.conversation_id
     if not selected_conversation and not network_actor and body.event=='chat_started' and body.client_event_id:
         selected_conversation=db.scalar(select(AgentConversation.id).join(ai_network.AIOutgoingSession,ai_network.AIOutgoingSession.conversation_id==AgentConversation.id).where(
             AgentConversation.workspace_id==workspace_id,AgentConversation.agent_id==agent_id,AgentConversation.user_id==session.user_id,ai_network.AIOutgoingSession.transfer_id==body.client_event_id))
@@ -172,7 +202,7 @@ def _process_event(workspace_id, agent_id, body, request, db, upload_payloads=No
     if selected_conversation:
         conversation = db.scalar(select(AgentConversation).where(AgentConversation.id == selected_conversation,
             AgentConversation.agent_id == agent_id, AgentConversation.workspace_id == workspace_id,
-            *([] if inbox_actor else [AgentConversation.user_id == session.user_id])).with_for_update().execution_options(populate_existing=True))
+            *([] if inbox_actor or whatsapp_actor else [AgentConversation.user_id == session.user_id])).with_for_update().execution_options(populate_existing=True))
         if not conversation:
             raise HTTPException(404, "Conversation not found.")
     else:
@@ -183,7 +213,7 @@ def _process_event(workspace_id, agent_id, body, request, db, upload_payloads=No
     from app.teamspace.records import person_for,check_ban,check_resolution
     person_for(db,conversation,network_actor is not None)
     if not inbox_actor:check_ban(db,conversation,network_actor is not None)
-    if body.event=='chat_closed':check_resolution(db,workspace_id,'chats',conversation)
+    if body.event=='chat_closed' and not (webchat_actor or whatsapp_actor):check_resolution(db,workspace_id,'chats',conversation)
     outgoing=db.get(ai_network.AIOutgoingSession,conversation.id)
     if outgoing and outgoing.status!='failed' and inbox_actor is None:
         return ai_sender.forward_event(db,conversation,outgoing,body,request,upload_payloads,network_actor)
@@ -197,10 +227,17 @@ def _process_event(workspace_id, agent_id, body, request, db, upload_payloads=No
         live.require_manage(db,conversation,session.user_id)
         live.require_assignee(conversation,session.user_id,inbox_revision)
     elif conversation.live_status in {'pending','active'}:
-        if body.event!='message_received':raise HTTPException(409,'This conversation is with live support. Close it from Inbox.')
+        if (webchat_actor or whatsapp_actor) and body.event in {'chat_closed','chat_timeout'}:
+            conversation.live_status='closed';conversation.live_revision+=1;conversation.live_updated_at=now
+            conversation.live_context={**conversation.live_context,'return_pending':False,'resume_active':False}
+        elif body.event!='message_received' and not((webchat_actor or whatsapp_actor) and body.event=='attachment_received'):raise HTTPException(409,'This conversation is with live support. Close it from Inbox.')
         if body.language and body.language!=conversation.workflow_state.get('language'):raise HTTPException(409,'The live chat keeps the language selected at handoff.')
-        store_input(db,conversation,body,[],network_actor.request_id if network_actor else body.client_event_id);conversation.live_updated_at=now;db.commit()
-        return result_payload(document,conversation,conversation.workflow_state,[],[],None,True,notice='Your message was sent to live support.')
+        if conversation.live_status in {'pending','active'}:
+            live_files=[]
+            for payload in (upload_payloads or []):
+                file=AgentAttachment(conversation_id=conversation.id,**payload);db.add(file);db.flush();live_files.append(attachments.metadata(file,workspace_id,agent_id))
+            store_input(db,conversation,body,live_files,network_actor.request_id if network_actor else body.client_event_id);conversation.live_updated_at=now;db.commit()
+            return result_payload(document,conversation,conversation.workflow_state,[],[],None,True,notice='Your message was sent to live support.')
     if conversation.live_context.get('resume_active') and body.event in {'message_received','attachment_received'}:
         document=live.frozen_document(conversation)
     previous = deepcopy(conversation.workflow_state or {})
@@ -229,8 +266,8 @@ def _process_event(workspace_id, agent_id, body, request, db, upload_payloads=No
                 conversation.live_status='closed';conversation.live_revision+=1;conversation.live_updated_at=now
                 conversation.live_context={**conversation.live_context,'return_pending':True,'return_status':'waiting_automation'}
                 live.audit(db,conversation,session.user_id,'closed')
-            previous.update({"closed": True, "closed_at": now.isoformat(), "closed_by": str(session.user_id),
-                "close_source": "live_agent" if inbox_actor else "tester", "stack": []})
+            previous.update({"closed": True, "closed_at": now.isoformat(), "closed_by": None if webchat_actor or whatsapp_actor else str(session.user_id),
+                "close_source": "live_agent" if inbox_actor else "whatsapp" if whatsapp_actor else "webchat" if webchat_actor else "tester", "stack": []})
             previous.pop("survey", None)
         else:
             previous.update({"feedback_submitted": True, "csat_rating": body.rating, "feedback_submitted_at": now.isoformat()})
@@ -256,14 +293,15 @@ def _process_event(workspace_id, agent_id, body, request, db, upload_payloads=No
     if pending_feedback: event_context["language"] = pending_feedback.get("language") or previous.get("language")
     file_metadata = []
     if upload_payloads is not None:
-        survey_node = next((node for node in walk(document.nodes) if node["id"] == (pending or {}).get("node_id")), None)
-        if not survey_node or previous.get("workflow_revision") != document.revision:
-            raise HTTPException(409, "There is no active survey upload question. Restart the tester if the workflow changed.")
-        field = survey.active_field(survey_node, previous)
-        if field["answer_type"] not in {"attachment", "attachments"}:
-            raise HTTPException(409, "The current survey question expects a typed answer.")
-        if field["answer_type"] == "attachment" and len(upload_payloads) != 1:
-            raise HTTPException(422, "This survey question accepts exactly one file.")
+        if not (webchat_actor or whatsapp_actor) or pending:
+            survey_node = next((node for node in walk(document.nodes) if node["id"] == (pending or {}).get("node_id")), None)
+            if not survey_node or previous.get("workflow_revision") != document.revision:
+                raise HTTPException(409, "There is no active survey upload question. Restart the tester if the workflow changed.")
+            field = survey.active_field(survey_node, previous)
+            if field["answer_type"] not in {"attachment", "attachments"}:
+                raise HTTPException(409, "The current survey question expects a typed answer.")
+            if field["answer_type"] == "attachment" and len(upload_payloads) != 1:
+                raise HTTPException(422, "This survey question accepts exactly one file.")
         for payload in upload_payloads:
             file = AgentAttachment(conversation_id=conversation.id, **payload)
             db.add(file); db.flush()
@@ -272,11 +310,11 @@ def _process_event(workspace_id, agent_id, body, request, db, upload_payloads=No
     history = []
     if body.event == "message_received":
         recent = db.scalars(select(AgentMessage).where(AgentMessage.conversation_id == conversation.id)
-            .order_by(AgentMessage.created_at.desc(), AgentMessage.id.desc()).limit(6)).all()
+            .order_by(AgentMessage.sequence.desc()).limit(6)).all()
         history = [{"role": item.role, "content": item.content} for item in reversed(recent)]
 
     def reserve_llm_request():
-        llm_key = token_hash("tester:{}:{}".format(session.user_id, int(now.timestamp()) // 60))
+        llm_key = token_hash("tester:{}:{}".format(whatsapp_actor.contact_id if whatsapp_actor else webchat_actor.session_id if webchat_actor else session.user_id, int(now.timestamp()) // 60))
         limit = insert(RateLimit).values(key=llm_key, count=1, expires_at=now + timedelta(minutes=2))
         llm_count = db.execute(limit.on_conflict_do_update(index_elements=[RateLimit.key],
             set_={"count": RateLimit.count + 1}).returning(RateLimit.count)).scalar_one()
@@ -321,6 +359,9 @@ def _process_event(workspace_id, agent_id, body, request, db, upload_payloads=No
             state, output, trace, matched = execute_state(previous)
         if conversation.live_context.get('return_pending') and not state.get('feedback_request'):
             # Consume the return once, durably, before executing potentially external actions.
+            if not input_saved:
+                store_input(db, conversation, body, file_metadata, network_actor.request_id if network_actor else body.client_event_id)
+                input_saved = True
             committed_messages += store_output(db,conversation,output);output=[];committed_trace += trace
             conversation.workflow_state=deepcopy(state);conversation.custom_fields=deepcopy(state.get('custom_fields',conversation.custom_fields or {}))
             conversation.live_context={**conversation.live_context,'return_pending':False,'return_status':'running','resume_active':True}
@@ -382,7 +423,7 @@ def _process_event(workspace_id, agent_id, body, request, db, upload_payloads=No
         if not matched and agent.llm_enabled and request.app.state.llm_tester.available:
             reserve_llm_request()
             recent = db.scalars(select(AgentMessage).where(AgentMessage.conversation_id == conversation.id)
-                .order_by(AgentMessage.created_at.desc(), AgentMessage.id.desc()).limit(20)).all()
+                .order_by(AgentMessage.sequence.desc()).limit(20)).all()
             history = [{"role": item.role, "content": item.content} for item in reversed(recent)]
             history.append({"role": "user", "content": body.content})
             # Keep nested-trigger context if a provider fails; the whole turn rolls back.
@@ -453,10 +494,20 @@ async def upload_survey_answer(workspace_id: uuid.UUID, agent_id: uuid.UUID, req
 @router.get("/tester/attachments/{attachment_id}")
 def download_survey_answer(workspace_id: uuid.UUID, agent_id: uuid.UUID, attachment_id: uuid.UUID,
     request: Request, inline: bool = False, db: Session = Depends(get_db)):
-    session, _, _, _ = access(request, db, workspace_id, agent_id=agent_id)
-    file = db.scalar(select(AgentAttachment).join(AgentConversation).where(AgentAttachment.id == attachment_id,
-        AgentConversation.agent_id == agent_id, AgentConversation.workspace_id == workspace_id,
-        ))
-    if not file or (file.conversation_id and not db.scalar(select(AgentConversation.id).where(AgentConversation.id==file.conversation_id,AgentConversation.user_id==session.user_id)) and not live.can_view(db,db.get(AgentConversation,file.conversation_id),session.user_id)):
-        raise HTTPException(404, "Attachment not found.")
+    from app.auth_service import current_session
+    session=current_session(request,db)
+    agent_service.workspace_for(db,workspace_id,session.user_id)
+    file=db.scalar(select(AgentAttachment).join(AgentConversation).where(AgentAttachment.id==attachment_id,AgentConversation.agent_id==agent_id,AgentConversation.workspace_id==workspace_id))
+    if not file:raise HTTPException(404,'Attachment not found.')
+    conversation=db.get(AgentConversation,file.conversation_id)
+    if conversation.live_status=='none':
+        if conversation.user_id!=session.user_id:raise HTTPException(404,'Attachment not found.')
+        access(request,db,workspace_id,agent_id=agent_id)
+        return file_response(file,request,inline=inline)
+    try:
+        from app.teamspace.records import record
+        record(db,workspace_id,'chats',conversation.id,session.user_id)
+    except HTTPException:
+        if conversation.user_id!=session.user_id:raise HTTPException(404,'Attachment not found.') from None
+        access(request,db,workspace_id,agent_id=agent_id)
     return file_response(file, request, inline=inline)

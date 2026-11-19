@@ -69,3 +69,11 @@ def test_lost_smtp_ack_is_uncertain_and_does_not_replay():
     with smtp_sink(lose_ack=True) as (port,messages):
         with pytest.raises(DeliveryError) as error:mailer(port).send_ticket(delivery())
     assert error.value.uncertain and len(messages)==1
+
+
+def test_actual_smtp_cc_and_reply_thread_headers():
+    item=delivery();item.cc_recipients=['copy@example.com','another@example.com'];item.persona={'in_reply_to':'<incoming@example.com>'}
+    with smtp_sink() as (port,messages):mailer(port).send_ticket(item)
+    message=BytesParser(policy=policy.default).parsebytes(messages[0])
+    assert [address.addr_spec for address in message['Cc'].addresses]==item.cc_recipients
+    assert message['In-Reply-To']=='<incoming@example.com>' and message['References']=='<incoming@example.com>'

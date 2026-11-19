@@ -83,8 +83,12 @@ async def import_agent(workspace_id: uuid.UUID, request: Request, file: UploadFi
         package = AgentExport.model_validate_json(content)
     except (ValidationError, ValueError, RecursionError):
         raise HTTPException(422, "This file is not a supported Petrix AI agent export. Use format petrix-agent, schema version 1.") from None
+    from app.agent_bundle import prepare_files, apply_bundle
+    from starlette.concurrency import run_in_threadpool
+    files = await run_in_threadpool(prepare_files, package)
     session, workspace, _, _ = access(request, db, workspace_id, mutation=True)
     agent = service.create_agent(db, workspace, session.user_id, package.agent.name, config=package.agent, action="imported")
+    apply_bundle(db, agent, session.user_id, package, files)
     db.commit()
     return service.agent_payload(agent)
 
@@ -129,6 +133,7 @@ def languages(workspace_id: uuid.UUID, agent_id: uuid.UUID, body: Languages, req
     service.check_languages(workspace, body.languages)
     before = service.configuration(agent)
     agent.languages, agent.default_language = body.languages, body.default_language
+    agent.speech_languages=[v for v in agent.speech_languages if v in body.languages] or [body.default_language]
     return service.save_agent(db, agent, session.user_id, "languages", "Languages and default language saved.", before)
 
 
@@ -159,6 +164,11 @@ def voice(workspace_id: uuid.UUID, agent_id: uuid.UUID, body: Voice, request: Re
     session, _, _, agent = access(request, db, workspace_id, mutation=True, agent_id=agent_id)
     service.check_revision(agent, body.expected_revision)
     before = service.configuration(agent)
+    if body.speech_languages is not None:
+        if not body.speech_languages or len(set(body.speech_languages))!=len(body.speech_languages) or any(v not in agent.languages for v in body.speech_languages):raise HTTPException(422,'Select speech languages from this agent languages.')
+        agent.speech_languages=body.speech_languages
+    if body.speech_to_text_enabled is not None:agent.speech_to_text_enabled=body.speech_to_text_enabled
+    if body.include_audio_transcript is not None:agent.include_audio_transcript=body.include_audio_transcript
     agent.voice_enabled, agent.voice_name, agent.voice_speed = body.voice_enabled, body.voice_name, body.voice_speed
     return service.save_agent(db, agent, session.user_id, "voice", "Voice preferences saved.", before)
 

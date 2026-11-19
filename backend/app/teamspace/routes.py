@@ -1,3 +1,4 @@
+from datetime import date
 import io,json,uuid,zipfile,xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from datetime import timedelta
@@ -25,7 +26,9 @@ def actor(request,db,workspace_id,mutation=False):
  return session
 
 def require_config(db,workspace_id,space_id,kind,user_id,manage=False):
- c.space_for(db,workspace_id,space_id);p.require(db,workspace_id,c.PERMISSIONS[kind][1 if manage else 0],user_id,teamspace_id=space_id)
+ c.space_for(db,workspace_id,space_id)
+ if kind=='copilot' and p.allowed(db,workspace_id,'manage_ai_agents',user_id,teamspace_id=space_id):return
+ p.require(db,workspace_id,c.PERMISSIONS[kind][1 if manage else 0],user_id,teamspace_id=space_id)
 
 def model_body(model,body):
  try:return model.model_validate(body)
@@ -51,7 +54,7 @@ def settings(workspace_id:uuid.UUID,space_id:uuid.UUID,kind:KINDS,request:Reques
   for target in ['chats','tickets','people']:
    counts[target]={mode:db.scalar(select(func.count()).select_from(SupportJob).where(SupportJob.workspace_id==workspace_id,SupportJob.teamspace_id==space_id,SupportJob.kind=='analysis',SupportJob.target_kind==target,SupportJob.status=='completed',SupportJob.finished_at>=start,SupportJob.payload['mode'].as_string()==mode)) or 0 for mode in ['auto','manual']}
  db.commit()
- return {'config':data,'revision':value.revision,'can_manage':p.allowed(db,workspace_id,c.PERMISSIONS[kind][1],session.user_id,teamspace_id=space_id),'provider_ready':request.app.state.support_ai.available,'provider_model':request.app.state.settings.support_ai_model or None,'counts':counts,'limits':{key:c.limit(db,workspace_id,key) for key in ['analysis_auto','analysis_manual','ban_rules','canned_replies','tags','tag_groups']},'plan_rank':c.plan_rank(db,workspace_id,request.app.state.settings),'options':{'tags':[payload(t) for t in active(db,workspace_id,'tags')],'groups':[payload(g) for g in active(db,workspace_id,'groups')],'fields':[row_payload(f) for f in r.field_definitions(db,workspace_id,'conversation')],'users':[{'id':str(u.id),'name':u.full_name or u.email} for u in db.scalars(select(User).join(Membership,Membership.user_id==User.id).where(Membership.workspace_id==workspace_id))],'teams':[{'id':str(t.id),'name':t.name} for t in db.scalars(select(SupportTeam).where(SupportTeam.workspace_id==workspace_id,SupportTeam.archived.is_(False)))]}}
+ return {'config':data,'revision':value.revision,'can_manage':p.allowed(db,workspace_id,c.PERMISSIONS[kind][1],session.user_id,teamspace_id=space_id) or kind=='copilot' and p.allowed(db,workspace_id,'manage_ai_agents',session.user_id,teamspace_id=space_id),'provider_ready':request.app.state.support_ai.available,'provider_model':request.app.state.settings.support_ai_model or None,'provider_models':sorted({v.strip() for v in request.app.state.settings.support_ai_models.split(',') if v.strip()}|({request.app.state.settings.support_ai_model} if request.app.state.settings.support_ai_model else set())),'counts':counts,'limits':{key:c.limit(db,workspace_id,key) for key in ['analysis_auto','analysis_manual','ban_rules','canned_replies','tags','tag_groups']},'plan_rank':c.plan_rank(db,workspace_id,request.app.state.settings),'options':{'tags':[payload(t) for t in active(db,workspace_id,'tags')],'groups':[payload(g) for g in active(db,workspace_id,'groups')],'fields':[row_payload(f) for f in r.field_definitions(db,workspace_id,'conversation')],'users':[{'id':str(u.id),'name':u.full_name or u.email} for u in db.scalars(select(User).join(Membership,Membership.user_id==User.id).where(Membership.workspace_id==workspace_id))],'teams':[{'id':str(t.id),'name':t.name} for t in db.scalars(select(SupportTeam).where(SupportTeam.workspace_id==workspace_id,SupportTeam.archived.is_(False)))]}}
 
 @router.post('/teamspace-operations/{space_id}/settings/{kind}')
 def save_settings(workspace_id:uuid.UUID,space_id:uuid.UUID,kind:KINDS,body:dict,request:Request,db:Session=Depends(get_db)):
@@ -115,6 +118,11 @@ class TextOnly(HTMLParser):
 
 def knowledge_text(name,data):
  if len(data)>5*1024*1024:raise HTTPException(422,'Upload a text or DOCX file up to 5 MiB.')
+ if name.lower().endswith('.pdf'):
+  try:
+   from app.agent_knowledge.extract import extract
+   return extract(data,name)
+  except ValueError:raise HTTPException(422,'Upload a readable, unencrypted PDF up to 5 MiB.') from None
  if name.lower().endswith('.docx'):
   try:
    with zipfile.ZipFile(io.BytesIO(data)) as archive:
@@ -136,26 +144,42 @@ def knowledge_text(name,data):
 @router.get('/teamspace-operations/{space_id}/knowledge')
 def knowledge(workspace_id:uuid.UUID,space_id:uuid.UUID,request:Request,db:Session=Depends(get_db)):
  session=actor(request,db,workspace_id);require_config(db,workspace_id,space_id,'copilot',session.user_id)
- return {'items':[{'id':str(row.id),'name':row.name,'kind':row.kind,'url':row.url,'revision':row.revision,'updated_at':row.updated_at,'status':'Ready','characters':len(row.content)} for row in db.scalars(select(CopilotKnowledge).where(CopilotKnowledge.workspace_id==workspace_id,CopilotKnowledge.teamspace_id==space_id))]}
+ return {'items':[{'id':str(row.id),'name':row.name,'kind':row.kind,'url':row.url,'revision':row.revision,'updated_at':row.updated_at,'status':row.status,'error':row.error,'options':row.options,'next_refresh_at':row.next_refresh_at,'characters':len(row.content)} for row in db.scalars(select(CopilotKnowledge).where(CopilotKnowledge.workspace_id==workspace_id,CopilotKnowledge.teamspace_id==space_id))]}
 
 @router.post('/teamspace-operations/{space_id}/knowledge',status_code=201)
-async def add_knowledge(workspace_id:uuid.UUID,space_id:uuid.UUID,request:Request,name:str=Form(...),kind:Literal['snippet','url','file']=Form(...),content:str=Form(''),url:str=Form(''),file:Optional[UploadFile]=File(None),db:Session=Depends(get_db)):
- session=actor(request,db,workspace_id,True);require_config(db,workspace_id,space_id,'copilot',session.user_id,True)
- from app.workspace_settings.routes import name_key
- if not name.strip() or len(name)>200:raise HTTPException(422,'Enter a source name of 1–200 characters.')
- if db.scalar(select(CopilotKnowledge.id).where(CopilotKnowledge.teamspace_id==space_id,CopilotKnowledge.name_key==name_key(name))):raise HTTPException(409,'This source name is already used.')
- if (db.scalar(select(func.count()).select_from(CopilotKnowledge).where(CopilotKnowledge.teamspace_id==space_id)) or 0)>=100:raise HTTPException(422,'A teamspace supports up to 100 knowledge sources.')
- if kind=='file':
-  if not file:raise HTTPException(422,'Select a file.')
-  content=knowledge_text(file.filename or '',await file.read(5*1024*1024+1))
- elif kind=='url':
-  if not url or len(url)>2048:raise HTTPException(422,'Enter a public HTTPS URL up to 2,048 characters.')
-  result=request.app.state.knowledge_fetcher.send('GET',url,{'Accept':'text/html, text/plain, application/json'},None,15)
-  if result.outcome!='success' or not isinstance(result.body,(str,dict,list)):raise HTTPException(422,'The URL could not be read. Use a public HTTPS page without redirects or sign-in.')
-  raw=result.body if isinstance(result.body,str) else json.dumps(result.body,ensure_ascii=False)
-  parser=TextOnly();parser.feed(raw);content=' '.join(parser.parts) if '<' in raw else raw
- if not content.strip() or len(content)>200000 or '\x00' in content:raise HTTPException(422,'Add readable content up to 200,000 characters.')
- row=CopilotKnowledge(workspace_id=workspace_id,teamspace_id=space_id,name=name.strip(),name_key=name_key(name),kind=kind,url=url if kind=='url' else '',content=content.strip());db.add(row);db.commit();return {'id':str(row.id),'name':row.name,'status':'Ready'}
+async def add_knowledge(workspace_id:uuid.UUID,space_id:uuid.UUID,request:Request,name:str=Form(...),kind:Literal['snippet','url','file']=Form(...),content:str=Form(''),url:str=Form(''),scope:Literal['page','all']=Form('page'),auto_retrain:bool=Form(False),retrain_days:int=Form(7,ge=1,le=90),file:Optional[UploadFile]=File(None),db:Session=Depends(get_db)):
+ from starlette.concurrency import run_in_threadpool
+ def authorize():
+  session=actor(request,db,workspace_id,True);require_config(db,workspace_id,space_id,'copilot',session.user_id,True);db.rollback()
+ await run_in_threadpool(authorize)
+ file_bytes=await file.read(5*1024*1024+1) if kind=='file' and file else None
+ def persist():
+  nonlocal content
+  session=actor(request,db,workspace_id,True);require_config(db,workspace_id,space_id,'copilot',session.user_id,True)
+  from app.workspace_settings.routes import name_key
+  if not name.strip() or len(name)>200:raise HTTPException(422,'Enter a source name of 1–200 characters.')
+  if db.scalar(select(CopilotKnowledge.id).where(CopilotKnowledge.teamspace_id==space_id,CopilotKnowledge.name_key==name_key(name))):raise HTTPException(409,'This source name is already used.')
+  if (db.scalar(select(func.count()).select_from(CopilotKnowledge).where(CopilotKnowledge.teamspace_id==space_id)) or 0)>=100:raise HTTPException(422,'A teamspace supports up to 100 knowledge sources.')
+  if kind=='file':
+   if not file:raise HTTPException(422,'Select a file.')
+   content=knowledge_text(file.filename or '',file_bytes)
+  elif kind=='url' and scope=='page' and not auto_retrain:
+   if not url or len(url)>2048:raise HTTPException(422,'Enter a public HTTPS URL up to 2,048 characters.')
+   result=request.app.state.knowledge_fetcher.send('GET',url,{'Accept':'text/html, text/plain, application/json'},None,15)
+   if result.outcome!='success' or not isinstance(result.body,(str,dict,list)):raise HTTPException(422,'The URL could not be read. Use a public HTTPS page without redirects or sign-in.')
+   raw=result.body if isinstance(result.body,str) else json.dumps(result.body,ensure_ascii=False)
+   parser=TextOnly();parser.feed(raw);content=' '.join(parser.parts) if '<' in raw else raw
+  deferred=kind=='url' and (scope=='all' or auto_retrain)
+  if deferred:
+   try:__import__('app.agent_knowledge.schemas',fromlist=['url_value']).url_value(url)
+   except ValueError:raise HTTPException(422,'Enter a public HTTPS URL without credentials.') from None
+  if not deferred and (not content.strip() or len(content)>200000 or '\x00' in content):raise HTTPException(422,'Add readable content up to 200,000 characters.')
+  row=CopilotKnowledge(workspace_id=workspace_id,teamspace_id=space_id,name=name.strip(),name_key=name_key(name),kind=kind,url=url if kind=='url' else '',content=content.strip(),options={'scope':scope,'auto_retrain':auto_retrain,'retrain_days':retrain_days,'actor_id':str(session.user_id)},status='pending' if deferred else 'success');db.add(row);db.commit()
+  if deferred:
+   from app.inbox.knowledge import queue
+   queue(db,row,session.user_id)
+  return {'id':str(row.id),'name':row.name,'status':row.status}
+ return await run_in_threadpool(persist)
 
 @router.post('/teamspace-operations/{space_id}/knowledge-delete')
 def remove_knowledge(workspace_id:uuid.UUID,space_id:uuid.UUID,body:s.Selection,request:Request,db:Session=Depends(get_db)):
@@ -183,7 +207,7 @@ def filters(workspace_id:uuid.UUID,kind:Literal['chats','tickets','people'],requ
 @router.get('/support/{kind}/{identifier}/details')
 def record_details(workspace_id:uuid.UUID,kind:Literal['chats','tickets','people'],identifier:uuid.UUID,request:Request,db:Session=Depends(get_db)):
  session=actor(request,db,workspace_id);row=r.record(db,workspace_id,kind,identifier,session.user_id);space_id=r.record_space(db,kind,row);ops=c.operations(db,workspace_id,space_id)
- person=row if kind=='people' else r.person_for(db,row) if kind=='chats' else db.get(SupportPerson,row.person_id) if row.person_id else None
+ person=row if kind=='people' else db.get(SupportPerson,row.person_id) if row.person_id else None
  from app.tickets.settings import active,payload
  latest=db.scalar(select(SupportJob).where(SupportJob.workspace_id==workspace_id,SupportJob.teamspace_id==space_id,SupportJob.kind=='analysis',SupportJob.target_kind==kind,SupportJob.target_id==identifier,SupportJob.status=='completed').order_by(SupportJob.finished_at.desc()).limit(1)) if p.allowed(db,workspace_id,'view_ai_analysis',session.user_id,teamspace_id=space_id) else None
  can_manage=True
@@ -253,40 +277,27 @@ def unban(workspace_id:uuid.UUID,kind:Literal['chats','tickets','people'],identi
  person.ban_permanent=False;person.banned_until=None;person.ban_reason='';person.revision+=1;person.updated_at=utcnow();db.add(PersonBanEvent(person_id=person.id,actor_id=session.user_id,reason='Unbanned'));db.commit();return {'saved':True}
 
 @router.get('/support/people')
-def people(workspace_id:uuid.UUID,request:Request,q:str=Query('',max_length=200),tag:Optional[uuid.UUID]=None,group:Optional[uuid.UUID]=None,custom_key:Optional[str]=None,custom_value:Optional[str]=None,offset:int=Query(0,ge=0),db:Session=Depends(get_db)):
+def people(workspace_id:uuid.UUID,request:Request,q:str=Query('',max_length=256),tag:Optional[uuid.UUID]=None,group:Optional[uuid.UUID]=None,
+ custom_key:str=Query('',max_length=100),custom_value:str=Query('',max_length=4000),
+ channel:Literal['','ticket','webchat','whatsapp','ai_agent_handoff','messaging','bitrix24','africas_talking']='',country:str=Query('',max_length=2),
+ period:Literal['','today','week','month','custom']='',created_from:Optional[date]=None,created_to:Optional[date]=None,
+ timezone:str=Query('Africa/Nairobi',max_length=100),offset:int=Query(0,ge=0),limit:int=Query(50,ge=1,le=100),db:Session=Depends(get_db)):
  session=actor(request,db,workspace_id)
- if not any(p.allowed(db,workspace_id,'view_people_all',session.user_id,teamspace_id=i) for i in p.accessible_spaces(db,workspace_id,session.user_id)):raise HTTPException(403,'Your role cannot view people.')
- query=select(SupportPerson).where(SupportPerson.workspace_id==workspace_id).order_by(SupportPerson.created_at.desc())
- values=[]
- for row in db.scalars(query):
-  if not r.person_visible(db,workspace_id,row,session.user_id):continue
-  value=r.person_payload(db,row,session.user_id)
-  if q and q.casefold() not in ' '.join(str(value.get(k,'')) for k in ['id','name','email','phone','external_id']).casefold():continue
-  if tag and not p.allowed(db,workspace_id,'view_people_tags',session.user_id,teamspace_id=r.record_space(db,'people',row)):continue
-  if tag and not any(t['id']==str(tag) for t in r.label_payload(db,workspace_id,'people',row)['effective_tags']):continue
-  if group and (not p.allowed(db,workspace_id,'view_people_tags',session.user_id,teamspace_id=r.record_space(db,'people',row)) or str(group) not in r.label_payload(db,workspace_id,'people',row)['group_ids']):continue
-  if custom_key and str((value.get('custom_fields',{}).get(custom_key) or {}).get('value',''))!=str(custom_value or ''):continue
-  values.append(value)
-  if len(values)>offset+50:break
- return {'people':values[offset:offset+50],'has_more':len(values)>offset+50}
+ from app.people import service
+ filters={k:v for k,v in locals().items() if k in {'q','tag','group','custom_key','custom_value','channel','country','period','created_from','created_to','timezone'}}
+ return service.listing(db,workspace_id,session.user_id,filters,offset,limit)
 
 @router.post('/support/people',status_code=201)
 def create_person(workspace_id:uuid.UUID,body:s.PersonBody,request:Request,db:Session=Depends(get_db)):
- session=actor(request,db,workspace_id,True);space=p.default_space(db,workspace_id);p.require(db,workspace_id,'manage_people_all',session.user_id,teamspace_id=space)
- for key in body.model_fields_set-{'expected_revision'}:
-  permission='unique_id' if key=='external_id' else 'location' if key=='country' else key
-  p.require(db,workspace_id,'manage_people_'+permission,session.user_id,teamspace_id=space)
- if body.external_id and db.scalar(select(SupportPerson.id).where(SupportPerson.workspace_id==workspace_id,SupportPerson.external_id==body.external_id)):raise HTTPException(409,'This external ID is already used.')
- identifier=uuid.uuid4();row=SupportPerson(id=identifier,workspace_id=workspace_id,teamspace_id=space,identity_key='manual:'+str(identifier),**body.model_dump(exclude={'expected_revision'}));db.add(row);db.commit();return r.person_payload(db,row,session.user_id)
+ session=actor(request,db,workspace_id,True)
+ from app.people.service import register
+ return register(db,workspace_id,session.user_id,body)
 
 @router.post('/support/people/{identifier}')
 def update_person(workspace_id:uuid.UUID,identifier:uuid.UUID,body:s.PersonBody,request:Request,db:Session=Depends(get_db)):
- session=actor(request,db,workspace_id,True);row=r.record(db,workspace_id,'people',identifier,session.user_id,'manage',True);c.checked_revision(row,body.expected_revision)
- if body.external_id and db.scalar(select(SupportPerson.id).where(SupportPerson.workspace_id==workspace_id,SupportPerson.external_id==body.external_id,SupportPerson.id!=identifier)):raise HTTPException(409,'This external ID is already used.')
- for key,value in body.model_dump(exclude={'expected_revision'},exclude_unset=True).items():
-  permission='unique_id' if key=='external_id' else 'location' if key=='country' else key;p.require(db,workspace_id,'manage_people_'+permission,session.user_id,teamspace_id=row.teamspace_id)
-  setattr(row,key,value)
- row.revision+=1;row.updated_at=utcnow();db.commit();return r.person_payload(db,row,session.user_id)
+ session=actor(request,db,workspace_id,True)
+ from app.people.service import update
+ return update(db,workspace_id,identifier,session.user_id,body)
 
 @router.post('/support/exports',status_code=202)
 def export(workspace_id:uuid.UUID,body:s.ExportBody,request:Request,db:Session=Depends(get_db)):
@@ -311,9 +322,11 @@ def job(workspace_id:uuid.UUID,identifier:uuid.UUID,request:Request,db:Session=D
  if not row or row.workspace_id!=workspace_id:raise HTTPException(404,'Job not found.')
  if row.kind=='export':
   if not jobs.can_download(db,row,session.user_id):raise HTTPException(404,'Export not found.')
+ elif row.kind=='knowledge':require_config(db,workspace_id,row.teamspace_id,'copilot',session.user_id)
  else:
   target=r.record(db,workspace_id,row.target_kind,row.target_id,session.user_id)
-  p.require(db,workspace_id,'view_ai_analysis' if row.kind=='analysis' else 'view_copilot',session.user_id,teamspace_id=row.teamspace_id)
+  if row.kind=='analysis':p.require(db,workspace_id,'view_ai_analysis',session.user_id,teamspace_id=row.teamspace_id)
+  else:__import__('app.inbox.copilot',fromlist=['require']).require(db,target,row.target_kind,session.user_id)
   if row.kind=='copilot' and row.actor_id!=session.user_id:raise HTTPException(404,'Draft not found.')
  return jobs.job_payload(row)
 

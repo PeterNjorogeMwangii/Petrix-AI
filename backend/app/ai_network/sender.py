@@ -134,7 +134,7 @@ def start(db,conversation,plan,state,request,origin_request_id=None):
     row=db.get(AIOutgoingSession,conversation.id)
     if row:raise HTTPException(409,'This conversation has already been handed off.')
     target=plan.connection
-    history=db.scalars(select(AgentMessage).where(AgentMessage.conversation_id==conversation.id).order_by(AgentMessage.created_at.desc(),AgentMessage.id.desc()).limit(40)).all()
+    history=db.scalars(select(AgentMessage).where(AgentMessage.conversation_id==conversation.id).order_by(AgentMessage.sequence.desc()).limit(40)).all()
     sanitized=[];size=0
     for item in history:
         content=privacy.redact_history(item.content,state.get('variables',{}))

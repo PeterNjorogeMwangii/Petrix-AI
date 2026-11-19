@@ -29,8 +29,17 @@ class ChatMutation(StrictModel):
 
 class ChatReply(ChatMutation):
     alias_id: Optional[uuid.UUID]=None
-    content: str = Field(min_length=1, max_length=4000)
+    content: str = Field(default='', max_length=4000)
+    attachment_ids: List[uuid.UUID] = Field(default_factory=list,max_length=5)
+    takeover: StrictBool = False
     client_message_id: uuid.UUID
+
+
+    @model_validator(mode='after')
+    def nonempty(self):
+        if not self.content.strip() and not self.attachment_ids:raise ValueError('Enter a message or attach a file.')
+        if len(set(self.attachment_ids))!=len(self.attachment_ids):raise ValueError('Attach each file once.')
+        return self
 
 
 class MemberAdd(StrictModel):

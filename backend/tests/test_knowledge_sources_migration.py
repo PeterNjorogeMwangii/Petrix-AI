@@ -20,7 +20,7 @@ def test_0018_indexes_legacy_snippets_once_and_retains_workflows_names_and_cross
    connection.commit()
    with connection.begin():command.upgrade(config,'head')
    with connection.begin():command.upgrade(config,'head')
-   assert connection.execute(text('SELECT version_num FROM alembic_version')).scalar()=='0018'
+   assert connection.execute(text('SELECT version_num FROM alembic_version')).scalar()=='0019'
    rows=connection.execute(text('SELECT id,legacy,content,chunks,status,enabled FROM agent_knowledge_sources')).all();assert len(rows)==2
    for row in rows:assert row.id==identifier and row.legacy and row.content==content and len(row.chunks)>=3 and row.status=='ready' and row.enabled
    assert connection.execute(text('SELECT revision FROM agent_knowledge')).scalars().all()==[7,7]

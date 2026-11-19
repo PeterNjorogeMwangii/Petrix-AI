@@ -93,6 +93,8 @@ def update_profile(db,workspace_id,session,body):
         profile.languages=body.languages;profile.available=body.available;profile.revision+=1
     if body.available and (not was_available or not profile.online_since or not profile.last_seen_at or profile.last_seen_at<utcnow()-timedelta(seconds=PRESENCE_SECONDS)):profile.online_since=utcnow()
     profile.last_seen_at=utcnow();profile.presence_session_id=session.id
+    from app.analytics.tracking import touch
+    touch(db,workspace_id,session)
     db.commit();return profile_payload(db,workspace_id,session.user_id)
 
 
@@ -100,7 +102,9 @@ def heartbeat(db,workspace_id,session):
     profile=db.get(SupportAgent,(workspace_id,session.user_id))
     if profile and profile.available:
         if not profile.last_seen_at or profile.last_seen_at<utcnow()-timedelta(seconds=PRESENCE_SECONDS):profile.online_since=utcnow()
-        profile.last_seen_at=utcnow();profile.presence_session_id=session.id;db.commit()
+        profile.last_seen_at=utcnow();profile.presence_session_id=session.id
+        from app.analytics.tracking import touch
+        touch(db,workspace_id,session);db.commit()
     return profile_payload(db,workspace_id,session.user_id)
 
 
@@ -139,7 +143,14 @@ class HandoffService:
 def apply_handoff(db,conversation,state):
     request=state.pop('handoff_request',None)
     if not request:return
-    context={**request,'return_pending':False,'resume_active':False}
+    old=conversation.live_context or {}
+    context={**request,'return_pending':False,'resume_active':False,'handoff_at':utcnow().isoformat(),'voice_mode':False}
+    context.setdefault('priority',False)
+    if conversation.live_status!='none':
+        context['priority']=bool(old.get('priority'));context['priority_type']=old.get('priority_type','skip_queue')
+    context['primary_language']=old.get('primary_language') or old.get('routing',{}).get('language') or request['routing']['language']
+    context['languages']=list(dict.fromkeys([context['primary_language'],*old.get('languages',[]),request['routing']['language']]))
+    conversation.live_display_status=''
     conversation.live_status='active' if request['assigned_id'] else 'pending'
     conversation.live_assigned_user_id=uuid.UUID(request['assigned_id']) if request['assigned_id'] else None
     conversation.live_context=context;conversation.live_revision+=1;conversation.live_updated_at=utcnow()
@@ -197,8 +208,8 @@ def messages(db,conversation,before=None):
     if before:
         marker=db.scalar(select(AgentMessage).where(AgentMessage.id==before,AgentMessage.conversation_id==conversation.id))
         if not marker:raise HTTPException(404,'Message cursor not found.')
-        query=query.where((AgentMessage.created_at<marker.created_at)|((AgentMessage.created_at==marker.created_at)&(AgentMessage.id<marker.id)))
-    rows=db.scalars(query.order_by(AgentMessage.created_at.desc(),AgentMessage.id.desc()).limit(101)).all()
+        query=query.where(AgentMessage.sequence<marker.sequence)
+    rows=db.scalars(query.order_by(AgentMessage.sequence.desc()).limit(101)).all()
     return {'messages':[{'id':str(row.id),'role':row.role,'content':row.content,'created_at':row.created_at.isoformat(),**row.message_data} for row in reversed(rows[:100])],
         'has_more':len(rows)>100}
 
@@ -222,7 +233,7 @@ def claim(db,conversation,session,expected):
     check_ban(db,conversation)
     current=policy(db,conversation.workspace_id,record_space(db,'chats',conversation)).assignment
     voluntary=current.get('algorithm',1)>=2 and current.get('mode')=='manual'
-    ignore=conversation.live_context.get('priority') and current.get('priority_type')=='ignore_limit'
+    ignore=conversation.live_context.get('priority') and conversation.live_context.get('priority_type',current.get('priority_type'))=='ignore_limit'
     if not voluntary and not ignore and person['active_chats']>=current.get('limit',settings.max_active_chats):raise HTTPException(409,'You have reached the active chat limit.')
     conversation.live_status='active';conversation.live_assigned_user_id=session.user_id;conversation.live_revision+=1;conversation.live_updated_at=utcnow()
     ensure_profile(db,conversation.workspace_id,session.user_id).last_assigned_at=utcnow()
@@ -234,21 +245,58 @@ def require_assignee(conversation,user_id,expected):
         raise HTTPException(409,'This live chat changed or is no longer assigned to you. Reload before continuing.')
 
 
-def reply(db,conversation,session,body):
+def reply(db,conversation,session,body,settings=None):
     duplicate=db.scalar(select(AgentMessage).where(AgentMessage.conversation_id==conversation.id,
         AgentMessage.message_data['client_message_id'].as_string()==str(body.client_message_id)))
+    identifiers=list(map(str,body.attachment_ids))
     if duplicate:
-        if duplicate.author_id!=session.user_id or duplicate.content!=body.content or ('alias_id' in body.model_fields_set and duplicate.message_data.get('alias_id')!=(str(body.alias_id) if body.alias_id else None)):raise HTTPException(409,'This reply request ID was already used with different contents.')
+        if duplicate.author_id!=session.user_id or duplicate.content!=body.content or duplicate.message_data.get('attachment_ids',[])!=identifiers or duplicate.message_data.get('takeover',False)!=body.takeover or ('alias_id' in body.model_fields_set and duplicate.message_data.get('alias_id')!=(str(body.alias_id) if body.alias_id else None)):raise HTTPException(409,'This reply request ID was already used with different contents.')
         return
-    from app.teamspace.records import check_ban
+    if conversation.workflow_state.get('channel')=='whatsapp':
+        from app.whatsapp.delivery import context as whatsapp_context
+        whatsapp_context(db,conversation)
+    from app.teamspace.records import check_ban,record_space
+    from app.inbox.workspace import ensure_budget,attachments,attachment_payload
     check_ban(db,conversation)
-    require_assignee(conversation,session.user_id,body.expected_revision)
+    if settings:ensure_budget(db,conversation.workspace_id,settings,'people_messages')
+    if conversation.live_status not in {'pending','active'} or conversation.workflow_state.get('external_handoff',{}).get('status') in {'sending','transferred','uncertain'}:raise HTTPException(409,'This conversation is not available for human replies.')
+    if conversation.live_revision!=body.expected_revision:raise HTTPException(409,'This livechat changed. Reload before sending.')
+    mine=conversation.live_status=='active' and conversation.live_assigned_user_id==session.user_id
+    if not mine:
+        if not body.takeover:raise HTTPException(409,'Take over this livechat before sending a reply.')
+        from app.workspace_settings.permissions import require
+        from app.teamspace.configuration import require_plan
+        if settings:require_plan(db,conversation.workspace_id,settings,1)
+        require(db,conversation.workspace_id,'transfer_livechats',session.user_id,teamspace_id=record_space(db,'chats',conversation))
+        assignment(db,conversation.workspace_id,lock=True)
+        routing={**conversation.live_context.get('routing',{}),'assignment_mode':'specific','user_ids':[str(session.user_id)],'team_ids':[]}
+        people=eligible(db,conversation.workspace_id,routing,space_id=record_space(db,'chats',conversation))
+        person=next((a for a in people if a['id']==str(session.user_id) and a['available']),None)
+        if not person:raise HTTPException(409,'Become available and join an eligible support team before taking over.')
+        from app.teamspace.assignment import policy
+        current=policy(db,conversation.workspace_id,record_space(db,'chats',conversation)).assignment
+        if not (conversation.live_context.get('priority') and conversation.live_context.get('priority_type')=='ignore_limit') and person['active_chats']>=current.get('limit',10):raise HTTPException(409,'You have reached the active chat limit.')
+        conversation.live_assigned_user_id=session.user_id;conversation.live_status='active';conversation.live_display_status='';conversation.live_revision+=1
+        conversation.live_context={**conversation.live_context,'assigned_id':str(session.user_id),'voice_mode':False}
+        ensure_profile(db,conversation.workspace_id,session.user_id).last_assigned_at=utcnow();audit(db,conversation,session.user_id,'taken_over')
     from app.profile import service as personas
     identity=personas.snapshot(db,conversation.workspace_id,'chats',conversation.id,session.user_id,body.alias_id,'alias_id' in body.model_fields_set)
+    assets=attachments(db,conversation,'chats',session.user_id,body.attachment_ids)
+    from app.models import AgentAttachment
+    from app.workflows.attachments import metadata
+    delivered_files=[]
+    for asset in assets:
+        file=AgentAttachment(id=asset.id,conversation_id=conversation.id,file_name=asset.file_name,content_type=asset.content_type,size_bytes=asset.size_bytes,data=asset.data)
+        db.add(file);db.delete(asset);delivered_files.append(metadata(file,conversation.workspace_id,conversation.agent_id))
     personas.remember(db,conversation.workspace_id,'chats',conversation.id,session.user_id,uuid.UUID(identity['alias_id']) if identity['alias_id'] else None)
     db.add(AgentMessage(conversation_id=conversation.id,author_id=session.user_id,role='assistant',content=body.content,
-        message_data={'source':'live_agent','author_name':identity['name'],'alias_id':identity['alias_id'],'avatar_url':identity['avatar_url'],'client_message_id':str(body.client_message_id),'quick_replies':[]}))
-    conversation.live_updated_at=utcnow();db.commit()
+        message_data={'source':'live_agent','author_name':identity['name'],'alias_id':identity['alias_id'],'avatar_url':identity['avatar_url'],'client_message_id':str(body.client_message_id),'takeover':body.takeover,'attachment_ids':identifiers,'attachments':delivered_files,'quick_replies':[]}))
+    conversation.live_context={**conversation.live_context,'voice_mode':False}
+    conversation.live_updated_at=utcnow()
+    if conversation.workflow_state.get('channel')=='whatsapp':
+        from app.whatsapp.delivery import enqueue
+        enqueue(db,conversation,settings,commit=False)
+    db.commit()
 
 
 def audit(db,conversation,actor_id,action):

@@ -81,7 +81,10 @@ def remove(db, workspace_id, actor_id, identifier, body):
     from app.tickets.settings import references
     from app.models import SupportTicket
     if references(db,workspace_id,'teams',team.id):raise HTTPException(409,'Remove this team from Create Ticket actions before deleting it.')
-    if db.scalar(select(SupportTicket.id).where(SupportTicket.workspace_id==workspace_id,SupportTicket.assignee_type=='team',SupportTicket.assignee_id==team.id,SupportTicket.status.in_(['open','in_progress']))):
+    from sqlalchemy import cast,or_
+    from sqlalchemy.dialects.postgresql import JSONB
+    ticket_team=or_((SupportTicket.assignee_type=='team')&(SupportTicket.assignee_id==team.id),cast(SupportTicket.assigned_team_ids,JSONB).contains([str(team.id)]),cast(SupportTicket.audience_team_ids,JSONB).contains([str(team.id)]))
+    if db.scalar(select(SupportTicket.id).where(SupportTicket.workspace_id==workspace_id,ticket_team,SupportTicket.status.in_(['open','in_progress','overdue']))):
         raise HTTPException(409,'Reassign or finish this team’s open tickets before deleting it.')
     protect_live_members(db,workspace_id,team)
     team.archived = True

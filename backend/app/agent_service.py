@@ -92,6 +92,7 @@ def configuration(agent):
     return {
         "name": agent.name, "llm_enabled": agent.llm_enabled, "persona": agent.persona,
         "languages": agent.languages, "default_language": agent.default_language,
+        "speech_to_text_enabled": agent.speech_to_text_enabled, "speech_languages": agent.speech_languages, "include_audio_transcript": agent.include_audio_transcript,
         "voice_enabled": agent.voice_enabled, "voice_name": agent.voice_name, "voice_speed": agent.voice_speed,
         "avatar_base64": base64.b64encode(agent.avatar_data).decode("ascii") if agent.avatar_data else None,
     }

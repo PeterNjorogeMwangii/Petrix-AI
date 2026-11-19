@@ -144,8 +144,9 @@ def claim(workspace_id:uuid.UUID,conversation_id:uuid.UUID,body:ChatMutation,req
 @router.post('/workspaces/{workspace_id}/inbox/chats/{conversation_id}/reply')
 def reply(workspace_id:uuid.UUID,conversation_id:uuid.UUID,body:ChatReply,request:Request,db:Session=Depends(get_db)):
     session,_,_=access(request,db,workspace_id,mutation=True)
-    conversation=service.chat(db,workspace_id,conversation_id,session.user_id,lock=True)
-    service.reply(db,conversation,session,body)
+    from app.teamspace.records import record
+    conversation=record(db,workspace_id,'chats',conversation_id,session.user_id,'manage',True)
+    service.reply(db,conversation,session,body,request.app.state.settings)
     return {**service.summary(conversation),**service.messages(db,conversation)}
 
 

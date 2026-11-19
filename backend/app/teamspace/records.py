@@ -16,7 +16,7 @@ def person_for(db,conversation,network=False):
  network=network or db.scalar(select(AIInboundSession.id).where(AIInboundSession.conversation_id==conversation.id)) is not None
  key=('transfer:'+str(conversation.id)) if network else 'account:'+str(conversation.user_id)
  user=db.get(User,conversation.user_id);agent=db.get(Agent,conversation.agent_id) if conversation.agent_id else None
- identifier=uuid.uuid5(conversation.workspace_id,key)
+ identifier=uuid.uuid4()
  db.execute(insert(SupportPerson).values(id=identifier,workspace_id=conversation.workspace_id,teamspace_id=agent.teamspace_id if agent else p.default_space(db,conversation.workspace_id),user_id=None if network else conversation.user_id,identity_key=key,name='' if network else (user.full_name or '') if user else '',email='' if network else user.email if user else '',phone='',location='',country='',custom_fields={},offences=0,ban_permanent=False,ban_reason='',revision=1,created_at=utcnow(),updated_at=utcnow()).on_conflict_do_nothing())
  row=db.scalar(select(SupportPerson).where(SupportPerson.workspace_id==conversation.workspace_id,SupportPerson.identity_key==key))
  conversation.person_id=row.id;db.flush();return row
@@ -33,6 +33,7 @@ def check_ban(db,conversation,network=False):
 def record_space(db,kind,row):
  if kind=='people':return row.teamspace_id or p.default_space(db,row.workspace_id)
  if kind=='tickets':
+  if row.teamspace_id:return row.teamspace_id
   conversation=db.get(AgentConversation,row.conversation_id) if row.conversation_id else None
  else:conversation=row
  agent=db.get(Agent,conversation.agent_id) if conversation and conversation.agent_id else None
@@ -40,17 +41,8 @@ def record_space(db,kind,row):
 
 
 def person_visible(db,workspace_id,person,user_id,manage=False):
- key='manage_people_all' if manage else 'view_people_all'
- if key in p.workspace_grants(db,workspace_id,user_id):return str(record_space(db,'people',person)) in p.accessible_spaces(db,workspace_id,user_id)
- conversations=db.scalars(select(AgentConversation).where(AgentConversation.workspace_id==workspace_id,AgentConversation.person_id==person.id)).all()
- for team in p.teams_for(db,workspace_id,user_id):
-  from app.models import WorkspaceRole
-  role=db.get(WorkspaceRole,team.role_id) if team.role_id else None
-  if not role or key not in role.permissions:continue
-  spaces=team.teamspace_ids if team.teamspace_ids is not None else [str(p.default_space(db,workspace_id))]
-  if str(person.team_id)==str(team.id) and str(person.teamspace_id) in spaces:return True
-  if any(str(team.id) in c.live_context.get('routing',{}).get('team_ids',[]) and str(record_space(db,'chats',c)) in spaces for c in conversations):return True
- return False
+ from app.people.service import visibility
+ return bool(db.scalar(select(SupportPerson.id).where(SupportPerson.id==person.id,visibility(db,workspace_id,user_id,manage))))
 
 
 def record(db,workspace_id,kind,identifier,user_id=None,action='view',lock=False,system=False):
@@ -66,12 +58,15 @@ def record(db,workspace_id,kind,identifier,user_id=None,action='view',lock=False
   from app.tickets.service import access_filter
   member=p.membership(db,workspace_id,user_id)
   from app.agent_service import can_manage
-  permitted=bool(member and db.scalar(select(SupportTicket.id).where(SupportTicket.id==identifier,access_filter(db,workspace_id,user_id,can_manage(db,workspace_id,member.role),action))))
+  permitted=bool(member and db.scalar(select(SupportTicket.id).where(SupportTicket.id==identifier,access_filter(db,workspace_id,user_id,can_manage(db,workspace_id,member.role),action),access_filter(db,workspace_id,user_id,can_manage(db,workspace_id,member.role),'view'))))
  else:
   from app.inbox.service import can_view,require_manage
   # Native AI chats are visible to their tester owner or an authorized all-record operator.
   permitted=can_view(db,row,user_id) or (row.user_id==user_id and p.allowed(db,workspace_id,'view_ai_agents',user_id,teamspace_id=record_space(db,kind,row))) or p.record_allowed(db,workspace_id,user_id,'livechats',action,row.live_assigned_user_id,None,record_space(db,kind,row))
-  if permitted and action=='manage':require_manage(db,row,user_id)
+  if row.live_status!='none':
+   from app.livechats.service import allowed as livechat_allowed
+   permitted=livechat_allowed(db,row,user_id,'view') and livechat_allowed(db,row,user_id,action)
+  elif permitted and action=='manage':require_manage(db,row,user_id)
  if not permitted:raise HTTPException(404,'Record not found or your role does not permit this operation.')
  return row
 

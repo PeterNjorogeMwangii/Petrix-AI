@@ -12,13 +12,13 @@ class SupportAI:
  def __init__(self,settings):self.settings=settings
  @property
  def available(self):return bool(self.settings.support_ai_base_url and self.settings.support_ai_model)
- def generate(self,system,content):
-  if not self.available:return AIResult(False,error='AI support is not configured. Set SUPPORT_AI_BASE_URL and SUPPORT_AI_MODEL on the server.')
+ def generate(self,system,content,model=None):
+  if not self.available:return AIResult(False,error='Inbox AI assistance is not configured yet. Ask your administrator to configure its AI service.')
   try:
    headers={'Content-Type':'application/json'}
    if self.settings.support_ai_api_key.get_secret_value():headers['Authorization']='Bearer '+self.settings.support_ai_api_key.get_secret_value()
    with httpx.Client(timeout=20,follow_redirects=False,trust_env=False) as client:
-    response=client.post(self.settings.support_ai_base_url.rstrip('/')+'/chat/completions',headers=headers,json={'model':self.settings.support_ai_model,'messages':[{'role':'system','content':system},{'role':'user','content':content}],'temperature':0.2,'max_tokens':1800,'stream':False})
+    response=client.post(self.settings.support_ai_base_url.rstrip('/')+'/chat/completions',headers=headers,json={'model':model or self.settings.support_ai_model,'messages':[{'role':'system','content':system},{'role':'user','content':content}],'temperature':0.2,'max_tokens':1800,'stream':False})
    if response.status_code>=400:return AIResult(False,error='The configured AI endpoint could not complete this request.')
    if len(response.content)>65536:raise ValueError
    data=response.json();text=data['choices'][0]['message']['content']

@@ -1,0 +1,1 @@
+"""Native People CRM workspace."""

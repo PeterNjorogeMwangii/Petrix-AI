@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import date,timedelta
 import uuid
 from typing import Literal,Optional
 from fastapi import APIRouter,Depends,Request,HTTPException,Query,Response
@@ -86,46 +86,42 @@ def verify_domain(workspace_id:uuid.UUID,identifier:uuid.UUID,body:Revision,requ
 
 
 @router.get('/tickets')
-def list_tickets(workspace_id:uuid.UUID,request:Request,status:Optional[Literal['open','in_progress','resolved','closed','overdue']]=None,q:str=Query('',max_length=200),offset:int=Query(0,ge=0,le=10000),tag:Optional[uuid.UUID]=None,group:Optional[uuid.UUID]=None,custom_key:Optional[str]=Query(None,max_length=100),custom_value:Optional[str]=Query(None,max_length=4000),db:Session=Depends(get_db)):
-    session,_,role,_=actor(request,db,workspace_id);manage=agent_service.can_manage(db,workspace_id,role)
-    query=select(SupportTicket).where(service.access_filter(db,workspace_id,session.user_id,manage))
-    if status:query=query.where(SupportTicket.status==status)
-    if q:query=query.where(SupportTicket.subject.icontains(q,autoescape=True)|SupportTicket.reference.icontains(q,autoescape=True)|SupportTicket.email.icontains(q,autoescape=True)|SupportTicket.full_name.icontains(q,autoescape=True))
-    query=query.order_by(SupportTicket.created_at.desc(),SupportTicket.id.desc())
-    if tag or group or custom_key:
-        from app.teamspace.records import matches_filters
-        rows=[];skipped=0
-        for row in db.scalars(query):
-            if not matches_filters(db,workspace_id,'tickets',row,tag,group,custom_key,custom_value):continue
-            if skipped<offset:skipped+=1;continue
-            rows.append(row)
-            if len(rows)==51:break
-    else:rows=db.scalars(query.offset(offset).limit(51)).all()
-    return {'tickets':[service.payload(t,brief=True) for t in rows[:50]],'has_more':len(rows)>50,'can_manage':manage}
+def list_tickets(workspace_id:uuid.UUID,request:Request,q:str=Query('',max_length=256),
+    status:Literal['','open','pending','in_progress','resolved','closed','overdue']='',
+    agent:Optional[uuid.UUID]=None,team:Optional[uuid.UUID]=None,created_by:str=Query('',max_length=100),
+    email_status:Literal['','pending','sending','sent','failed_to_send','delivered','failed_to_deliver']='',
+    tag:Optional[uuid.UUID]=None,group:Optional[uuid.UUID]=None,custom_key:str=Query('',max_length=100),custom_value:str=Query('',max_length=4000),
+    period:Literal['','today','week','month','custom']='',created_from:Optional[date]=None,created_to:Optional[date]=None,
+    timezone:str=Query('Africa/Nairobi',max_length=100),offset:int=Query(0,ge=0),limit:int=Query(50,ge=1,le=100),db:Session=Depends(get_db)):
+    session,_,_,_=actor(request,db,workspace_id)
+    from app.tickets import workspace as w
+    filters={key:value for key,value in locals().items() if key in {'q','status','agent','team','created_by','email_status','tag','group','custom_key','custom_value','period','created_from','created_to','timezone'}}
+    return w.listing(db,workspace_id,session.user_id,filters,offset,limit,request.app.state.settings)
 
 
-def detail_payload(db,ticket):
+def detail_payload(db,ticket,config=None):
     from app.workspace_settings import permissions as p
-    from app.models import AgentConversation, Agent
+    from app.tickets import workspace as w
+    from app.models import TicketInboundEmail
+    from types import SimpleNamespace
+    config=config or SimpleNamespace(smtp_from='Petrix AI <hello@petrix.local>')
     member=p.membership(db,ticket.workspace_id)
     user_id=member.user_id if member else None
-    legacy_manage=agent_service.can_manage(db,ticket.workspace_id,member.role) if member else False
-    can_manage=bool(user_id and db.scalar(select(SupportTicket.id).where(SupportTicket.id==ticket.id,service.access_filter(db,ticket.workspace_id,user_id,legacy_manage,action='manage'))))
-    conversation=db.get(AgentConversation,ticket.conversation_id) if ticket.conversation_id else None
-    agent=db.get(Agent,conversation.agent_id) if conversation and conversation.agent_id else None
-    can_transfer=bool(can_manage and p.allowed(db,ticket.workspace_id,'transfer_tickets',teamspace_id=agent.teamspace_id if agent else None))
-
-    notes=list(reversed(db.scalars(select(TicketNote).where(TicketNote.ticket_id==ticket.id).order_by(TicketNote.created_at.desc(),TicketNote.id.desc()).limit(200)).all()))
+    notes=list(reversed(db.scalars(select(TicketNote).where(TicketNote.ticket_id==ticket.id).order_by(TicketNote.created_at.desc(),TicketNote.id.desc()).limit(300)).all()))
     emails=db.scalars(select(TicketEmail).where(TicketEmail.ticket_id==ticket.id).order_by(TicketEmail.created_at,TicketEmail.id)).all()
-    return {'ticket':service.payload(ticket),'can_manage':can_manage,'can_transfer':can_transfer,'notes':[{'id':str(n.id),'author_name':n.author_name,'kind':n.kind,'content':n.content,'created_at':n.created_at} for n in notes],
-        'emails':[notifications.email_payload(e) for e in emails]}
+    inbound=db.scalars(select(TicketInboundEmail).where(TicketInboundEmail.ticket_id==ticket.id).order_by(TicketInboundEmail.created_at,TicketInboundEmail.id)).all()
+    value=w.summary(db,ticket,user_id,config)
+    return {'ticket':value,'can_manage':value['can_manage'],'can_transfer':value['can_transfer'],
+        'notes':[{key:getattr(n,key) for key in ['id','author_id','author_name','kind','content','color','revision','created_at','updated_at']} for n in notes],
+        'emails':[notifications.email_payload(e) for e in emails],
+        'incoming':[{key:getattr(e,key) for key in ['id','message_id','sender','recipient','subject','content','created_at']} for e in inbound]}
 
 
 @router.get('/tickets/{identifier}')
 def read_ticket(workspace_id:uuid.UUID,identifier:uuid.UUID,request:Request,db:Session=Depends(get_db)):
     session,_,role,_=actor(request,db,workspace_id)
     ticket=service.owned(db,workspace_id,session.user_id,agent_service.can_manage(db,workspace_id,role),identifier)
-    return detail_payload(db,ticket)
+    return detail_payload(db,ticket,request.app.state.settings)
 
 
 @router.post('/tickets/{identifier}')
@@ -141,19 +137,20 @@ def update_ticket(workspace_id:uuid.UUID,identifier:uuid.UUID,body:TicketUpdate,
         from app.models import AgentConversation,Agent
         conversation=db.get(AgentConversation,ticket.conversation_id) if ticket.conversation_id else None
         agent=db.get(Agent,conversation.agent_id) if conversation and conversation.agent_id else None
-        require(db,workspace_id,'transfer_tickets',teamspace_id=agent.teamspace_id if agent else None)
+        require(db,workspace_id,'transfer_tickets',teamspace_id=__import__('app.teamspace.records',fromlist=['record_space']).record_space(db,'tickets',ticket))
     try:name,_=service.assignee(db,workspace_id,body.assignee_type,body.assignee_id)
     except service.ScriptError as error:raise HTTPException(422,str(error)) from None
     if (ticket.status,ticket.assignee_type,ticket.assignee_id)!=(body.status,body.assignee_type,body.assignee_id):
         user=db.get(User,session.user_id)
         db.add(TicketNote(ticket_id=ticket.id,author_id=user.id,author_name=user.full_name or user.email,kind='event',content='Status: {} → {}. Assignee: {} → {}.'.format(ticket.status.replace('_',' '),body.status.replace('_',' '),ticket.assignee_name,name)))
+        ticket.assigned_team_ids=[str(body.assignee_id)] if body.assignee_type=='team' and body.assignee_id else [];ticket.audience_team_ids=[]
         ticket.status=body.status;ticket.assignee_type=body.assignee_type;ticket.assignee_id=body.assignee_id;ticket.assignee_name=name;ticket.revision+=1;ticket.updated_at=utcnow()
     db.commit()
     if ticket.status in {'resolved','closed'}:
         from app.teamspace.jobs import analysis_request
         try:analysis_request(db,workspace_id,'tickets',ticket,None,None,request.app.state.settings,'auto')
         except HTTPException:db.rollback()
-    return detail_payload(db,ticket)
+    return detail_payload(db,ticket,request.app.state.settings)
 
 
 @router.post('/tickets/{identifier}/notes',status_code=201)
@@ -161,14 +158,14 @@ def add_note(workspace_id:uuid.UUID,identifier:uuid.UUID,body:NoteBody,request:R
     session,_,role,_=actor(request,db,workspace_id,True)
     ticket=service.owned(db,workspace_id,session.user_id,agent_service.can_manage(db,workspace_id,role),identifier,True,action='manage')
     user=db.get(User,session.user_id);ticket.revision+=1;ticket.updated_at=utcnow()
-    db.add(TicketNote(ticket_id=ticket.id,author_id=user.id,author_name=user.full_name or user.email,content=body.content));db.commit();return detail_payload(db,ticket)
+    db.add(TicketNote(ticket_id=ticket.id,author_id=user.id,author_name=user.full_name or user.email,content=body.content));db.commit();return detail_payload(db,ticket,request.app.state.settings)
 
 
 @router.post('/tickets/{identifier}/send-queued')
 def send_queued(workspace_id:uuid.UUID,identifier:uuid.UUID,request:Request,db:Session=Depends(get_db)):
     session,_,role,_=actor(request,db,workspace_id,True)
     ticket=service.owned(db,workspace_id,session.user_id,agent_service.can_manage(db,workspace_id,role),identifier,action='manage')
-    db.commit();notifications.dispatch(db,request.app.state.ticket_mailer,ticket_id=ticket.id);return detail_payload(db,ticket)
+    db.commit();notifications.dispatch(db,request.app.state.ticket_mailer,ticket_id=ticket.id);return detail_payload(db,ticket,request.app.state.settings)
 
 
 @router.post('/tickets/{identifier}/emails/{email_id}/retry')
@@ -183,4 +180,4 @@ def retry_email(workspace_id:uuid.UUID,identifier:uuid.UUID,email_id:uuid.UUID,b
     if status=='uncertain' and not body.confirm_not_sent:raise HTTPException(409,'Confirm that the email was not sent before retrying an unconfirmed delivery.')
     if row.attempts>=5:raise HTTPException(409,'This email reached its five-attempt limit. Review the mail server configuration.')
     row.status='queued';row.error='';row.revision+=1;row.updated_at=utcnow();db.commit()
-    notifications.dispatch(db,request.app.state.ticket_mailer,ticket_id=ticket.id);return detail_payload(db,ticket)
+    notifications.dispatch(db,request.app.state.ticket_mailer,ticket_id=ticket.id);return detail_payload(db,ticket,request.app.state.settings)

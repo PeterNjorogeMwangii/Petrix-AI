@@ -68,6 +68,8 @@ def logout(request: Request, response: Response, db: Session = Depends(get_db)):
     session = current_session(request, db)
     require_csrf(request, session)
     session.revoked_at = utcnow()
+    from app.analytics.tracking import close
+    close(db,session.id,session.revoked_at)
     db.commit()
     response.delete_cookie(SESSION_COOKIE, path="/")
     response.delete_cookie(CSRF_COOKIE, path="/")

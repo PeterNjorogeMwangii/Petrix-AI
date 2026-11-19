@@ -24,7 +24,7 @@ async def read_uploads(files):
         name = re.split(r"[\\/]", file.filename or "attachment")[-1]
         name = "".join(character for character in name if ord(character) >= 32 and ord(character) != 127).strip()
         name = (name or "attachment")[:255]
-        media_type = file.content_type or "application/octet-stream"
+        media_type = (file.content_type or "application/octet-stream").split(";", 1)[0].strip()
         if len(media_type) > 120 or not re.fullmatch(r"[A-Za-z0-9!#$&^_.+\-]+/[A-Za-z0-9!#$&^_.+\-]+", media_type):
             media_type = "application/octet-stream"
         items.append({"file_name": name, "content_type": media_type, "size_bytes": len(content), "data": content})

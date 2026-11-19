@@ -35,16 +35,22 @@ def weights(settings):
  return {key:float(values.get(key,1)) for key in CATEGORIES}
 
 
-def source_query(workspace_id):
+def message_source_query(workspace_id,ids=None,exclude_ids=None):
  data=AgentMessage.message_data
  category=case((AgentMessage.role=='assistant',case((data['source'].as_string()=='live_agent','people_messages'),else_='ai_messages')),else_='people_messages')
  # A mirror has author_name without source=live_agent; transferred history is
  # explicitly marked. Source request IDs deduplicate receiving-side copies.
  unique=func.coalesce(data['source_request_id'].as_string(),cast(AgentMessage.id,String))
  messages=select(unique.label('identity'),AgentMessage.created_at.label('at'),category.label('category'),case((data['source'].as_string()=='live_agent','inbox'),else_='chat').label('source'),AgentConversation.agent_id.label('agent_id'),case((data['source'].as_string()=='live_agent',func.coalesce(AgentMessage.author_id,AgentConversation.live_assigned_user_id)),else_=null()).label('user_id'),Agent.teamspace_id.label('teamspace_id'),case((func.json_array_length(func.coalesce(AgentConversation.live_context['routing']['team_ids'],literal('[]').cast(__import__('sqlalchemy').JSON)))==1,AgentConversation.live_context['routing']['team_ids'][0].as_string()),else_=null()).label('team_id'),literal(1.0).label('units')).join(AgentConversation,AgentConversation.id==AgentMessage.conversation_id).outerjoin(Agent,Agent.id==AgentConversation.agent_id).where(AgentConversation.workspace_id==workspace_id,AgentMessage.role.in_(['user','assistant']),func.coalesce(data['transferred_history'].as_boolean(),False).is_(False),~((AgentMessage.role=='assistant') & data['author_name'].as_string().is_not(None) & (func.coalesce(data['source'].as_string(),'')!='live_agent'))).distinct(unique).order_by(unique,AgentMessage.created_at)
- m=messages.subquery()
+ if ids is not None:messages=messages.where(AgentConversation.id.in_(ids))
+ if exclude_ids is not None:messages=messages.where(AgentConversation.id.not_in(exclude_ids))
+ return messages
+
+
+def source_query(workspace_id):
+ m=message_source_query(workspace_id).subquery()
  msg=select(m.c.at,m.c.category,m.c.source,cast(m.c.agent_id,String).label('agent_id'),cast(m.c.user_id,String).label('user_id'),cast(m.c.teamspace_id,String).label('teamspace_id'),m.c.team_id,m.c.units)
- emails=select(TicketEmail.sent_at.label('at'),case((TicketEmail.kind=='reply','manual_emails'),else_='ai_emails').label('category'),literal('email').label('source'),cast(AgentConversation.agent_id,String).label('agent_id'),cast(case((TicketEmail.kind=='reply',TicketEmail.actor_id),else_=SupportTicket.creator_id),String).label('user_id'),cast(Agent.teamspace_id,String).label('teamspace_id'),case((SupportTicket.assignee_type=='team',cast(SupportTicket.assignee_id,String)),else_=null()).label('team_id'),literal(1.0).label('units')).join(SupportTicket,SupportTicket.id==TicketEmail.ticket_id).outerjoin(AgentConversation,AgentConversation.id==SupportTicket.conversation_id).outerjoin(Agent,Agent.id==AgentConversation.agent_id).where(SupportTicket.workspace_id==workspace_id,TicketEmail.status=='sent',TicketEmail.sent_at.is_not(None))
+ emails=select(TicketEmail.sent_at.label('at'),case((TicketEmail.kind=='reply','manual_emails'),else_='ai_emails').label('category'),literal('email').label('source'),cast(AgentConversation.agent_id,String).label('agent_id'),cast(case((TicketEmail.kind=='reply',TicketEmail.actor_id),else_=SupportTicket.creator_id),String).label('user_id'),cast(func.coalesce(SupportTicket.teamspace_id,Agent.teamspace_id),String).label('teamspace_id'),case((SupportTicket.assignee_type=='team',cast(SupportTicket.assignee_id,String)),else_=null()).label('team_id'),literal(1.0).label('units')).join(SupportTicket,SupportTicket.id==TicketEmail.ticket_id).outerjoin(AgentConversation,AgentConversation.id==SupportTicket.conversation_id).outerjoin(Agent,Agent.id==AgentConversation.agent_id).where(SupportTicket.workspace_id==workspace_id,TicketEmail.status=='sent',TicketEmail.sent_at.is_not(None))
  events=select(UsageEvent.created_at.label('at'),UsageEvent.category,UsageEvent.source,cast(UsageEvent.agent_id,String).label('agent_id'),cast(UsageEvent.user_id,String).label('user_id'),cast(UsageEvent.teamspace_id,String).label('teamspace_id'),cast(UsageEvent.team_id,String).label('team_id'),UsageEvent.units).where(UsageEvent.workspace_id==workspace_id)
  return union_all(msg,emails,events).subquery()
 

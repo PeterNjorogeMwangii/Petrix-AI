@@ -24,10 +24,13 @@ class CopilotConfig(Revision):
  all_conversations:bool=False
  person_history:bool=False
  current_conversation:bool=True
+ model:str=Field(default='',max_length=100)
+ personality:str=Field(default='',max_length=8000)
  @model_validator(mode='after')
  def dependencies(self):
-  if not self.current_conversation:raise ValueError('Access to the current conversation is required.')
+  if not self.current_conversation and (self.all_conversations or self.person_history):raise ValueError('Current-conversation access is required when broader conversation access is enabled.')
   if self.all_conversations:self.person_history=True
+  if self.person_history:self.current_conversation=True
   return self
 class AssignmentConfig(Revision):
  section:Literal['method','limit','priority']
@@ -118,6 +121,8 @@ class ExportBody(RequestJob):
   return value
 class BulkLabels(Selection,LabelsBody):kind:Literal['chats','tickets','people']
 class PersonBody(StrictModel):
+ client_request_id:Optional[uuid.UUID]=None
+ teamspace_id:Optional[uuid.UUID]=None
  name:str=Field(default='',max_length=200)
  email:str=Field(default='',max_length=320)
  phone:str=Field(default='',max_length=50)
@@ -136,3 +141,18 @@ class PersonBody(StrictModel):
  @field_validator('external_id')
  @classmethod
  def external(cls,value):return value.strip() or None if value else None
+
+ @field_validator('name','phone','location','country','external_id')
+ @classmethod
+ def safe_contact(cls,value,info):
+  if value is None:return value
+  value=value.strip()
+  if any(ord(c)<32 or ord(c)==127 for c in value):raise ValueError('Contact details must be single-line values.')
+  if info.field_name=='country' and value:
+   import pycountry
+   value=value.upper()
+   if not pycountry.countries.get(alpha_2=value):raise ValueError('Choose a valid country code.')
+  if info.field_name=='phone' and value:
+   import re
+   if not re.fullmatch(r'\+?[0-9][0-9 ()\-.]*',value) or not 5<=sum(c.isdigit() for c in value)<=20:raise ValueError('Enter a valid phone number.')
+  return value

@@ -11,14 +11,16 @@ def policy(db,workspace_id,space_id,lock=False):return operations(db,workspace_i
 
 def priority_for(db,workspace_id,conversation,config):
  if not config.get('priority_enabled') or not conversation:return False
- person=r.person_for(db,conversation);labels=r.label_payload(db,workspace_id,'people',person)
+ person=db.get(SupportPerson,conversation.person_id) if conversation.person_id else None
+ if not person:return False
+ labels=r.label_payload(db,workspace_id,'people',person)
  return bool(set(config.get('tag_ids',[]))&{t['id'] for t in labels['effective_tags']} or set(config.get('group_ids',[]))&set(labels['group_ids']) or any(set(config.get('group_ids',[]))&set(r.tag_group_ids(db,t)) for t in db.scalars(select(TicketTag).where(TicketTag.workspace_id==workspace_id,TicketTag.id.in_([uuid.UUID(i) for i in labels['tag_ids']]),TicketTag.archived.is_(False)))))
 
-def pick(db,workspace_id,ops,people,priority=False):
+def pick(db,workspace_id,ops,people,priority=False,priority_type=None):
  config=ops.assignment
  online=[person for person in people if person['available']]
  if config['mode']=='manual':return None
- ignore=priority and config.get('priority_type')=='ignore_limit'
+ ignore=priority and (priority_type or config.get('priority_type'))=='ignore_limit'
  available=[person for person in online if ignore or person['active_chats']<config['limit']]
  if not available:return None
  mode=config['mode']
@@ -53,8 +55,10 @@ def offer(db,workspace_id,config,context,conversation=None):
  people=eligible(db,workspace_id,routing,space_id=space_id)
  if not people:return None,'no_eligible_agents'
  if config['availability_check'] and not any(person['available'] for person in people):return None,'no_available_agents'
- priority=priority_for(db,workspace_id,conversation,ops.assignment);chosen=pick(db,workspace_id,ops,people,priority)
- return {'routing':routing,'eligible_ids':[person['id'] for person in people],'assigned_id':chosen,'priority':priority,'priority_type':ops.assignment.get('priority_type','skip_queue')},None
+ priority=bool(conversation.live_context.get('priority')) if conversation and conversation.live_status!='none' else priority_for(db,workspace_id,conversation,ops.assignment)
+ priority_type=conversation.live_context.get('priority_type',ops.assignment.get('priority_type','skip_queue')) if conversation and conversation.live_status!='none' else ops.assignment.get('priority_type','skip_queue')
+ chosen=pick(db,workspace_id,ops,people,priority,priority_type)
+ return {'routing':routing,'eligible_ids':[person['id'] for person in people],'assigned_id':chosen,'priority':priority,'priority_type':priority_type},None
 
 def drain(db,workspace_id):
  from app.inbox.service import eligible,ensure_profile
@@ -67,7 +71,7 @@ def drain(db,workspace_id):
   space_id=r.record_space(db,'chats',row);ops=policy(db,workspace_id,space_id,True)
   if ops.assignment.get('algorithm',1)<2 or ops.assignment['mode']=='manual':continue
   people=eligible(db,workspace_id,row.live_context['routing'],space_id=space_id)
-  chosen=pick(db,workspace_id,ops,people,row.live_context.get('priority',False))
+  chosen=pick(db,workspace_id,ops,people,row.live_context.get('priority',False),row.live_context.get('priority_type'))
   if chosen:row.live_assigned_user_id=uuid.UUID(chosen);row.live_status='active';row.live_revision+=1;row.live_updated_at=utcnow();db.flush()
  db.commit()
 

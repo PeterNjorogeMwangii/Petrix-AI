@@ -71,14 +71,19 @@ def image_bytes(data,square=False):
 def overview(workspace_id:uuid.UUID,request:Request,db:Session=Depends(get_db)):
  _,workspace,_=actor(request,db,workspace_id)
  row=policy(db,workspace_id);p.bootstrap(db,workspace_id);db.commit()
- return {'revision':row.revision,'name':workspace.name,'permissions':{key:p.allowed(db,workspace_id,key) for key in p.ALL},'avatar_url':f'/api/workspaces/{workspace_id}/avatar?v={row.revision}' if workspace.avatar_data else None,'branding':branding_payload(db,workspace_id),'idle_minutes':row.idle_minutes}
+ return {'revision':row.revision,'name':workspace.name,'timezone':row.timezone,'permissions':{key:p.allowed(db,workspace_id,key) for key in p.ALL},'avatar_url':f'/api/workspaces/{workspace_id}/avatar?v={row.revision}' if workspace.avatar_data else None,'branding':branding_payload(db,workspace_id),'idle_minutes':row.idle_minutes}
 
 
 @router.post('/workspaces/{workspace_id}/workspace-settings/general')
-async def general(workspace_id:uuid.UUID,request:Request,name:str=Form(...),expected_revision:int=Form(...),remove_avatar:bool=Form(False),avatar:Optional[UploadFile]=File(None),db:Session=Depends(get_db)):
+async def general(workspace_id:uuid.UUID,request:Request,name:str=Form(...),expected_revision:int=Form(...),remove_avatar:bool=Form(False),avatar:Optional[UploadFile]=File(None),timezone:Optional[str]=Form(None,max_length=64),db:Session=Depends(get_db)):
  _,workspace,_=actor(request,db,workspace_id,'manage_workspace',True)
  if not name.strip() or len(name.strip())>100 or any(ord(c)<32 for c in name):raise HTTPException(422,'Enter a workspace name of 1–100 characters.')
  row=policy(db,workspace_id,True);revision(row,expected_revision)
+ if timezone is not None:
+  from zoneinfo import ZoneInfo,ZoneInfoNotFoundError
+  try:ZoneInfo(timezone)
+  except (ZoneInfoNotFoundError,ValueError):raise HTTPException(422,'Choose a valid IANA workspace timezone.') from None
+  row.timezone=timezone
  if avatar:workspace.avatar_data=image_bytes(await avatar.read(10*1024*1024+1),True)
  elif remove_avatar:workspace.avatar_data=None
  workspace.name=name.strip();row.revision+=1;db.commit()

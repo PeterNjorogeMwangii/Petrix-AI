@@ -15,9 +15,21 @@ class Settings(BaseSettings):
     api_base_url: str = "http://localhost:8000"
     magic_link_minutes: int = 15
     session_hours: int = 168
+    advisor_base_url: str = ""
+    advisor_api_key: SecretStr = SecretStr("")
+    advisor_model: str = ""
+    advisor_vision_enabled: bool = False
+    advisor_worker_enabled: bool = True
+    webchat_worker_enabled: bool = True
+    whatsapp_worker_enabled: bool = True
+    whatsapp_graph_version: str = 'v27.0'
     support_ai_base_url: str = ""
     support_ai_api_key: SecretStr = SecretStr("")
     support_ai_model: str = ""
+    support_ai_models: str = ""
+    perception_provider_url: str = ""
+    perception_provider_token: SecretStr = SecretStr("")
+    perception_worker_enabled: bool = True
     support_worker_enabled: bool = True
     support_worker_interval: int = 5
     stripe_secret_key: SecretStr = SecretStr("")
@@ -30,6 +42,7 @@ class Settings(BaseSettings):
     smtp_password: SecretStr = SecretStr("")
     smtp_starttls: bool = False
     smtp_ssl: bool = False
+    ticket_mail_webhook_secret: SecretStr = SecretStr('')
     smtp_from: str = "Petrix AI <hello@petrix.local>"
     google_client_id: str = ""
     google_client_secret: SecretStr = SecretStr("")
@@ -76,7 +89,25 @@ class Settings(BaseSettings):
 
     database_connections_encryption_key: SecretStr = SecretStr("")
 
-    @field_validator("support_ai_base_url", "moderation_base_url")
+    @field_validator('whatsapp_graph_version')
+    @classmethod
+    def graph_version(cls,value):
+        import re
+        if not re.fullmatch(r'v[1-9][0-9]\.0',value):raise ValueError('Use a pinned Meta Graph API version, such as v27.0.')
+        return value
+
+    @field_validator("perception_provider_url")
+    @classmethod
+    def perception_url(cls,value):
+        if value:
+            parsed=urlsplit(value)
+            if parsed.scheme not in {'http','https'} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+                raise ValueError('Use a complete collection endpoint URL without credentials, query or fragment.')
+            if parsed.scheme=='http' and parsed.hostname not in {'localhost','127.0.0.1','::1'}:
+                raise ValueError('Collection endpoints require HTTPS, except local loopback development.')
+        return value.rstrip('/')
+
+    @field_validator("support_ai_base_url", "moderation_base_url", "advisor_base_url")
     @classmethod
     def support_url(cls,value):
         if value:
@@ -174,11 +205,15 @@ class Settings(BaseSettings):
                 raise ValueError("Use a complete language model base URL without credentials, query, or fragment.")
             if self.app_env == "production" and parsed.scheme != "https":
                 raise ValueError("Production language model connections require HTTPS.")
+        if self.app_env == 'production' and self.advisor_base_url and not self.advisor_base_url.startswith('https://'):
+            raise ValueError('Production Advisor connections require HTTPS.')
         if self.app_env == 'production' and self.moderation_base_url and not self.moderation_base_url.startswith('https://'):
             raise ValueError('Production moderation connections require HTTPS.')
         if self.knowledge_egress_ip:
             import ipaddress
             ipaddress.ip_address(self.knowledge_egress_ip)
+        if self.ticket_mail_webhook_secret.get_secret_value() and len(self.ticket_mail_webhook_secret.get_secret_value()) < 32:
+            raise ValueError('TICKET_MAIL_WEBHOOK_SECRET must contain at least 32 characters.')
         if self.smtp_ssl and self.smtp_starttls:
             raise ValueError("Choose SMTP SSL or STARTTLS, not both.")
         if self.app_env == "production":

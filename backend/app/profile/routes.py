@@ -140,27 +140,50 @@ def updates(workspace_id:uuid.UUID,request:Request,since:Optional[datetime]=None
 @router.post('/workspaces/{workspace_id}/tickets/{identifier}/reply')
 def ticket_reply(workspace_id:uuid.UUID,identifier:uuid.UUID,body:m.TicketReply,request:Request,db:Session=Depends(get_db)):
  session=actor(request,db,True);ticket=r.record(db,workspace_id,'tickets',identifier,session.user_id,'manage',True)
- request_hash=hashlib.sha256(json.dumps({'content':body.content,'domain_id':str(body.domain_id),'alias':str(body.alias_id) if body.alias_id else None if 'alias_id' in body.model_fields_set else 'automatic'},sort_keys=True).encode()).hexdigest()
+ request_data={'content':body.content,'domain_id':str(body.domain_id),'alias':str(body.alias_id) if body.alias_id else None if 'alias_id' in body.model_fields_set else 'automatic'}
+ if body.attachment_ids:request_data['attachment_ids']=list(map(str,body.attachment_ids))
+ if 'cc' in body.model_fields_set:request_data['cc']=body.cc
+ if 'takeover' in body.model_fields_set:request_data['takeover']=body.takeover
+ request_hash=hashlib.sha256(json.dumps(request_data,sort_keys=True).encode()).hexdigest()
  existing=db.scalar(select(TicketEmail).where(TicketEmail.ticket_id==identifier,TicketEmail.client_request_id==body.client_request_id))
  if existing:
   if existing.actor_id!=session.user_id or existing.persona.get('request_hash')!=request_hash:raise HTTPException(409,'This reply request ID was already used.')
   from app.routes.tickets import detail_payload
-  return detail_payload(db,ticket)
+  return detail_payload(db,ticket,request.app.state.settings)
  if ticket.status in {'closed','resolved'}:raise HTTPException(409,'Reopen this ticket before sending a reply.')
  s.revision(ticket,body.expected_revision)
+ from app.inbox.workspace import ensure_budget,attachments,attachment_payload
+ ensure_budget(db,workspace_id,request.app.state.settings,'manual_emails')
  person=db.get(__import__('app.models',fromlist=['SupportPerson']).SupportPerson,ticket.person_id) if ticket.person_id else None
  if r.is_banned(person):raise HTTPException(403,'This person cannot receive replies while a ban is active.')
- from app.tickets.settings import valid_sender
- domain=db.get(TicketEmailDomain,body.domain_id)
- if not domain or domain.workspace_id!=workspace_id or not valid_sender(domain):raise HTTPException(422,'Choose a verified email sender in this workspace.')
+ from app.tickets import workspace as tw
+ _,sender_email,domain=tw.sender(db,workspace_id,body.domain_id if 'domain_id' in body.model_fields_set else ticket.sender_domain_id,request.app.state.settings)
+ from app.tickets.service import email,ScriptError
+ prior_reply=db.scalar(select(TicketEmail).where(TicketEmail.ticket_id==identifier,TicketEmail.recipient_type=='customer',TicketEmail.kind=='reply').order_by(TicketEmail.created_at.desc()).limit(1))
+ cc_values=body.cc if 'cc' in body.model_fields_set else prior_reply.cc_recipients if prior_reply else []
+ try:cc=list(dict.fromkeys(email(v.strip()) for v in cc_values if v.strip()))
+ except ScriptError as error:raise HTTPException(422,str(error)) from None
+ cc=[v for v in cc if v.lower()!=ticket.email.lower()]
+ if body.takeover:
+  from app.workspace_settings.permissions import require
+  require(db,workspace_id,'transfer_tickets',session.user_id,teamspace_id=r.record_space(db,'tickets',ticket))
+  ticket.assignee_type='user';ticket.assignee_id=session.user_id;ticket.assignee_name=db.get(User,session.user_id).full_name or db.get(User,session.user_id).email
+
  identity=s.snapshot(db,workspace_id,'tickets',identifier,session.user_id,body.alias_id,'alias_id' in body.model_fields_set)
+ assets=attachments(db,ticket,'tickets',session.user_id,body.attachment_ids)
+ identity['attachments']=[attachment_payload(a) for a in assets]
  identity['request_hash']=request_hash
+ identity['default_sender']=domain is None
+ from app.models import TicketInboundEmail
+ previous=db.scalar(select(TicketInboundEmail).where(TicketInboundEmail.ticket_id==identifier).order_by(TicketInboundEmail.created_at.desc()).limit(1))
+ if previous:identity['in_reply_to']=previous.message_id
  signature='\n'.join(v for v in [identity['signature_name'],identity['signature_content']] if v);plain=body.content+('\n\n--\n'+signature if signature else '')
  content='<p>'+html.escape(body.content).replace('\n','<br>')+'</p>'+('<div class="email-signature">'+html.escape(signature).replace('\n','<br>')+'</div>' if signature else '')
- row=TicketEmail(ticket_id=identifier,domain_id=domain.id,kind='reply',actor_id=session.user_id,client_request_id=body.client_request_id,persona=identity,recipient_type='customer',recipient=ticket.email,sender=domain.local_part+'@'+domain.domain,sender_name=identity['name'],subject='['+ticket.reference+'] '+ticket.subject,body_html=content,body_text=plain,message_id='<reply-'+body.client_request_id.hex+'@'+domain.domain+'>')
+ mail_id=uuid.uuid4()
+ row=TicketEmail(id=mail_id,ticket_id=identifier,domain_id=domain.id if domain else None,cc_recipients=cc,kind='reply',actor_id=session.user_id,client_request_id=body.client_request_id,persona=identity,recipient_type='customer',recipient=ticket.email,sender=sender_email,sender_name=identity['name'],subject='['+ticket.reference+'] '+ticket.subject,body_html=content,body_text=plain,message_id='<reply-'+mail_id.hex+'@'+sender_email.rsplit('@',1)[1]+'>')
  db.add(row);s.remember(db,workspace_id,'tickets',identifier,session.user_id,uuid.UUID(identity['alias_id']) if identity['alias_id'] else None);ticket.updated_at=utcnow();ticket.revision+=1
  db.add(TicketNote(ticket_id=identifier,author_id=session.user_id,author_name=db.get(User,session.user_id).full_name or 'Support agent',kind='event',content='Customer email reply prepared as '+identity['name']+'.'));db.commit()
  from app.tickets.notifications import dispatch
  dispatch(db,request.app.state.ticket_mailer,ticket_id=identifier,email_id=row.id)
  from app.routes.tickets import detail_payload
- return detail_payload(db,ticket)
+ return detail_payload(db,ticket,request.app.state.settings)

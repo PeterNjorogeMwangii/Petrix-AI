@@ -18,10 +18,15 @@ def dispatch(db,mailer,conversation_id=None,ticket_id=None,limit=10,email_id=Non
         if conversation_id:query=query.where(SupportTicket.conversation_id==conversation_id)
         if ticket_id:query=query.where(SupportTicket.id==ticket_id)
         if email_id:query=query.where(TicketEmail.id==email_id)
-        row=db.scalar(query.with_for_update(of=TicketEmail,skip_locked=True).limit(1).execution_options(populate_existing=True))
+        candidate=db.scalar(query.with_only_columns(SupportTicket.id).with_for_update(of=SupportTicket,skip_locked=True).limit(1))
+        if not candidate:db.commit();break
+        row=db.scalar(query.where(TicketEmail.ticket_id==candidate).with_for_update(of=TicketEmail,skip_locked=True).limit(1).execution_options(populate_existing=True))
         if not row:db.commit();break
         ticket=db.get(SupportTicket,row.ticket_id);domain=db.get(TicketEmailDomain,row.domain_id) if row.domain_id else None
         authorized=valid_sender(domain)
+        if not row.domain_id and row.kind=='reply' and row.persona.get('default_sender'):
+            from app.tickets.workspace import default_sender
+            authorized=not hasattr(mailer,'settings') or row.sender==default_sender(mailer.settings)[1]
         if row.kind=='reply':
             from app.teamspace import records
             from app.models import SupportPerson
@@ -39,6 +44,10 @@ def dispatch(db,mailer,conversation_id=None,ticket_id=None,limit=10,email_id=Non
             row.status='failed';row.error='The sender or assignee is no longer eligible. Review ticket and email settings.';row.revision+=1;row.updated_at=utcnow();db.commit();count+=1;continue
         row.status='sending';row.attempts+=1;row.revision+=1;row.updated_at=utcnow();db.commit()
         try:
+            from app.models import InboxAttachment
+            ids=[__import__('uuid').UUID(a['id']) for a in row.persona.get('attachments',[])]
+            row.attachments=list(db.scalars(select(InboxAttachment).where(InboxAttachment.workspace_id==ticket.workspace_id,InboxAttachment.kind=='tickets',InboxAttachment.record_id==ticket.id,InboxAttachment.id.in_(ids),InboxAttachment.used.is_(True)))) if ids else []
+            if len(row.attachments)!=len(ids):raise DeliveryError(False)
             mailer.send_ticket(row)
             row.status='sent';row.sent_at=utcnow();row.error=''
         except DeliveryError as error:
@@ -52,5 +61,5 @@ def dispatch(db,mailer,conversation_id=None,ticket_id=None,limit=10,email_id=Non
 
 def email_payload(row):
     status='uncertain' if row.status=='sending' and row.updated_at<utcnow()-timedelta(minutes=2) else row.status
-    return {'id':str(row.id),'kind':row.kind,'persona':row.persona if row.kind=='reply' else {},'body_text':row.body_text if row.kind=='reply' else '', 'recipient_type':row.recipient_type,'recipient':row.recipient,'sender':row.sender,'subject':row.subject,'status':status,'attempts':row.attempts,'error':row.error,
-        'revision':row.revision,'created_at':row.created_at,'sent_at':row.sent_at}
+    return {'id':str(row.id),'kind':row.kind,'persona':{k:v for k,v in row.persona.items() if k not in {'request_hash','default_sender','in_reply_to'}} if row.kind=='reply' else {},'body_text':row.body_text, 'recipient_type':row.recipient_type,'recipient':row.recipient,'sender':row.sender,'subject':row.subject,'status':status,'attempts':row.attempts,'error':row.error or ('Delivery was not confirmed. Check the mail server before retrying.' if status=='uncertain' else ''),
+        'cc':row.cc_recipients,'message_id':row.message_id,'delivery_status':row.delivery_status,'delivery_at':row.delivery_at,'email_status':__import__('app.tickets.workspace',fromlist=['email_state']).email_state(row),'revision':row.revision,'created_at':row.created_at,'sent_at':row.sent_at}

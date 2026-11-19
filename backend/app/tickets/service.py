@@ -118,6 +118,9 @@ class TicketService:
             number=number,reference='PTX-{:06d}'.format(number),agent_name=context.agent.name,description=description,assignee_type=config['assignee_type'],assignee_id=uuid.UUID(config['assignee_id']) if config['assignee_id'] else None,
             assignee_name=name,custom_fields=copied,tags=snapshots,**single)
         ticket.person_id=self.conversation.person_id
+        ticket.teamspace_id=context.agent.teamspace_id
+        ticket.assigned_team_ids=[config['assignee_id']] if config['assignee_type']=='team' and config['assignee_id'] else []
+        ticket.sender_domain_id=uuid.UUID(config['email_domain_id']) if config['email_domain_id'] else None
         db.add(ticket);db.flush()
         from app.models import RecordLabels
         db.add(RecordLabels(workspace_id=self.workspace_id,kind="tickets",record_id=ticket.id,tag_ids=config["tag_ids"],group_ids=config["tag_group_ids"]))
@@ -146,34 +149,31 @@ class TicketService:
 
 def access_filter(db,workspace_id,user_id,manage,action='view'):
     from app.workspace_settings import permissions as grants
+    from app.models import Agent
+    from sqlalchemy import false,func,cast,String
+    from sqlalchemy.dialects.postgresql import JSONB
+    team_match=lambda ids: or_(*[cast(SupportTicket.assigned_team_ids,JSONB).contains([str(i)])|cast(SupportTicket.audience_team_ids,JSONB).contains([str(i)])|((SupportTicket.assignee_type=='team')&(SupportTicket.assignee_id==uuid.UUID(str(i)))) for i in ids]) if ids else false()
     if grants.has_custom(db,workspace_id,user_id):
         scopes,teams=grants.record_scopes(db,workspace_id,user_id,'tickets',action)
-        from sqlalchemy import false
-        scope=false()
-        if 'all' in scopes:scope=SupportTicket.workspace_id==workspace_id
-        else:
-            if 'own' in scopes:scope=scope|((SupportTicket.assignee_type=='user')&(SupportTicket.assignee_id==user_id))
-            if 'teams' in scopes:scope=scope|((SupportTicket.assignee_type=='team')&SupportTicket.assignee_id.in_([uuid.UUID(t) for t in teams]))|__import__('sqlalchemy').cast(SupportTicket.audience_team_ids,__import__('sqlalchemy.dialects.postgresql',fromlist=['JSONB']).JSONB).op('?|')(__import__('sqlalchemy.dialects.postgresql',fromlist=['array']).array(list(teams),type_=__import__('sqlalchemy').String))
-        spaces=grants.accessible_spaces(db,workspace_id,user_id)
-        from app.models import Agent
-        conversations=select(AgentConversation.id).join(Agent,Agent.id==AgentConversation.agent_id).where(Agent.teamspace_id.in_([uuid.UUID(t) for t in spaces]))
+        linked=select(Agent.teamspace_id).join(AgentConversation,AgentConversation.agent_id==Agent.id).where(AgentConversation.id==SupportTicket.conversation_id).correlate(SupportTicket).scalar_subquery()
+        space=func.coalesce(SupportTicket.teamspace_id,linked,grants.default_space(db,workspace_id))
+        target=lambda spaces:space.in_([uuid.UUID(str(i)) for i in spaces])
+        rules=[];own=(SupportTicket.assignee_type=='user')&(SupportTicket.assignee_id==user_id)
+        available=target(grants.accessible_spaces(db,workspace_id,user_id))
+        if 'all' in scopes:rules.append(available)
+        if 'own' in scopes:rules.append(available&own)
+        if 'teams' in scopes:rules.append(available&team_match(teams))
         for team_id,team_scopes,team_spaces in grants.team_record_grants(db,workspace_id,user_id,'tickets',action):
-            team_conversations=select(AgentConversation.id).join(Agent,Agent.id==AgentConversation.agent_id).where(Agent.teamspace_id.in_([uuid.UUID(t) for t in team_spaces]))
-            team_scope=false()
-            if team_scopes&{'all','teams'}:team_scope=team_scope|(((SupportTicket.assignee_type=='team')&(SupportTicket.assignee_id==uuid.UUID(team_id)))|__import__('sqlalchemy').cast(SupportTicket.audience_team_ids,__import__('sqlalchemy.dialects.postgresql',fromlist=['JSONB']).JSONB).op('?')(team_id))
-            if 'own' in team_scopes:team_scope=team_scope|((SupportTicket.assignee_type=='user')&(SupportTicket.assignee_id==user_id))
-            scope=scope|(team_scope&SupportTicket.conversation_id.in_(team_conversations))
-        member=grants.membership(db,workspace_id,user_id)
-        orphan=SupportTicket.conversation_id.is_(None) if member and member.teamspace_ids is None else false()
-        return (SupportTicket.workspace_id==workspace_id)&scope&((SupportTicket.conversation_id.in_(conversations))|orphan)
-
+            if team_scopes&{'all','teams'}:rules.append(target(team_spaces)&team_match([team_id]))
+            if 'own' in team_scopes:rules.append(target(team_spaces)&own)
+        return (SupportTicket.workspace_id==workspace_id)&(or_(*rules) if rules else false())
     if manage:return SupportTicket.workspace_id==workspace_id
     teams=[team.id for team in db.scalars(select(SupportTeam).where(SupportTeam.workspace_id==workspace_id,SupportTeam.archived.is_(False))) if str(user_id) in team.member_ids]
-    return (SupportTicket.workspace_id==workspace_id)&or_(SupportTicket.creator_id==user_id,(SupportTicket.assignee_type=='user')&(SupportTicket.assignee_id==user_id),(SupportTicket.assignee_type=='team')&(SupportTicket.assignee_id.in_(teams)),__import__('sqlalchemy').cast(SupportTicket.audience_team_ids,__import__('sqlalchemy.dialects.postgresql',fromlist=['JSONB']).JSONB).op('?|')(__import__('sqlalchemy.dialects.postgresql',fromlist=['array']).array([str(t) for t in teams],type_=__import__('sqlalchemy').String)))
+    return (SupportTicket.workspace_id==workspace_id)&or_(SupportTicket.creator_id==user_id,(SupportTicket.assignee_type=='user')&(SupportTicket.assignee_id==user_id),team_match(teams))
 
 
 def owned(db,workspace_id,user_id,manage,identifier,lock=False,action='view'):
-    query=select(SupportTicket).where(SupportTicket.id==identifier,access_filter(db,workspace_id,user_id,manage,action))
+    query=select(SupportTicket).where(SupportTicket.id==identifier,access_filter(db,workspace_id,user_id,manage,action),access_filter(db,workspace_id,user_id,manage,'view'))
     if lock:query=query.with_for_update().execution_options(populate_existing=True)
     row=db.scalar(query)
     if not row:raise HTTPException(404,'Ticket not found.')
@@ -181,6 +181,6 @@ def owned(db,workspace_id,user_id,manage,identifier,lock=False,action='view'):
 
 
 def payload(ticket,brief=False):
-    excluded={'creator_id','execution_id','action_node_id','number'}
+    excluded={'creator_id','execution_id','action_node_id','number','client_request_id','create_payload_hash'}
     if brief:excluded.update({'description','custom_fields','tags'})
     return {column.name:getattr(ticket,column.name) for column in ticket.__table__.columns if column.name not in excluded}

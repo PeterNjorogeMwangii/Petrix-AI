@@ -68,7 +68,7 @@ class TesterEvent(StrictModel):
     survey_answer_token: Optional[uuid.UUID] = None
     feedback_token: Optional[uuid.UUID] = None
     feedback_answers: Dict[uuid.UUID, str] = Field(default_factory=dict, max_length=50)
-    channel: Optional[Literal["webchat", "messaging", "bitrix24", "africas_talking"]] = None
+    channel: Optional[Literal["webchat", "messaging", "bitrix24", "africas_talking", "whatsapp"]] = None
 
     @field_validator("feedback_answers")
     @classmethod

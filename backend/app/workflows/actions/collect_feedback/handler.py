@@ -36,5 +36,5 @@ def execute(config, context):
         "rating_enabled": config["rating_enabled"], "rating_variable_name": config["rating_variable_name"],
         "request_message": render(selected["rating_request_message"], context) if config["rating_enabled"] else "",
         "fields": fields, "channel": channel, "typed_rating": channel in {"bitrix24", "africas_talking"},
-        "rating_buttons": [1,2,3,4,5] if channel == "messaging" and config["rating_enabled"] else [],
+        "rating_buttons": [1,2,3,4,5] if channel in {"messaging","whatsapp"} and config["rating_enabled"] else [],
         "submission_template": selected["submission_text"]})
